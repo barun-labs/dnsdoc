@@ -1,3 +1,4 @@
+mod checks;
 mod config;
 mod dns;
 mod types;
