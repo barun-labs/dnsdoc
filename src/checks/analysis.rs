@@ -15,8 +15,14 @@ fn approx_minutes(secs: u32) -> String {
 }
 
 /// Diagnose propagation state from the resolver rows and the authoritative
-/// answer, spelling out what the verdict is based on.
-pub fn analyze_propagation(rtype: &str, auth: &[String], rows: &[PropagationRow]) -> Diagnosis {
+/// answer, spelling out what the verdict is based on. `now` anchors the
+/// wall-clock ETA for when stale caches will clear.
+pub fn analyze_propagation(
+    rtype: &str,
+    auth: &[String],
+    rows: &[PropagationRow],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Diagnosis {
     let answered: Vec<&PropagationRow> = rows.iter().filter(|r| r.error.is_none()).collect();
     let timeouts = rows.len() - answered.len();
 
@@ -71,9 +77,33 @@ pub fn analyze_propagation(rtype: &str, auth: &[String], rows: &[PropagationRow]
         // Worst-case wait = highest TTL still attached to a stale answer.
         let stale_ttl = differing.iter().filter_map(|r| r.ttl).max();
         if let Some(ttl) = stale_ttl {
+            let eta = now + chrono::Duration::seconds(ttl as i64);
             evidence.push(format!(
-                "stale answers carry TTL up to {ttl}s ({}) before caches clear",
-                approx_minutes(ttl)
+                "stale answers carry TTL up to {ttl}s ({}) before caches clear (~{} UTC)",
+                approx_minutes(ttl),
+                eta.format("%H:%M")
+            ));
+        }
+    }
+    // Latency outliers over answered rows: threshold = max(500, 5 * median),
+    // named per resolver. Skip when fewer than 3 samples.
+    let lat: Vec<u128> = answered.iter().filter_map(|r| r.latency_ms).collect();
+    if lat.len() >= 3 {
+        let mut sorted = lat.clone();
+        sorted.sort();
+        let median = sorted[sorted.len() / 2];
+        let threshold = 500.max(5 * median);
+        let slow: Vec<&PropagationRow> = rows
+            .iter()
+            .filter(|r| r.error.is_none() && r.latency_ms.is_some_and(|ms| ms > threshold))
+            .collect();
+        if !slow.is_empty() {
+            evidence.push(format!(
+                "slow resolvers: {}",
+                slow.iter()
+                    .map(|r| format!("{} ({}ms)", r.resolver, r.latency_ms.unwrap()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
@@ -112,9 +142,11 @@ fn sev_rank(s: Severity) -> u8 {
 
 /// Cross-correlate the three checks into ranked probable causes, each with the
 /// evidence it rests on. `prop` is the propagation diagnosis (may be None if
-/// that tab has not run yet).
+/// that tab has not run yet); `prop_rows` are the raw resolver rows used to
+/// correlate resolver failures with DNSSEC breakage.
 pub fn synthesize(
     prop: Option<&Diagnosis>,
+    prop_rows: &[PropagationRow],
     audit: &[CheckResult],
     trace: &[TraceHop],
 ) -> Vec<Diagnosis> {
@@ -173,14 +205,41 @@ pub fn synthesize(
         });
     }
 
+    // Resolvers that error out now — consistent with DNSSEC validation failure.
+    let failing: Vec<&PropagationRow> = prop_rows.iter().filter(|r| r.error.is_some()).collect();
+    let some_answered = prop_rows.iter().any(|r| r.error.is_none());
     for hop in &broken_dnssec {
+        let mut evidence = vec![
+            format!("based on: zone {} — {}", hop.zone, hop.dnssec.clone().unwrap_or_default()),
+            "a broken chain of trust makes validating resolvers return SERVFAIL".into(),
+        ];
+        if !failing.is_empty() && some_answered {
+            evidence.push(format!(
+                "{} resolver(s) failing now: {} — consistent with validation failure",
+                failing.len(),
+                failing.iter().map(|r| r.resolver.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        }
         out.push(Diagnosis {
             headline: "DNSSEC-validating resolvers will fail to resolve this domain".into(),
             severity: Severity::Err,
-            evidence: vec![
-                format!("based on: zone {} — {}", hop.zone, hop.dnssec.clone().unwrap_or_default()),
-                "a broken chain of trust makes validating resolvers return SERVFAIL".into(),
-            ],
+            evidence,
+        });
+    }
+
+    // Slow authoritative path: any hop over 200ms is worth flagging.
+    let slow_hops: Vec<&TraceHop> = trace
+        .iter()
+        .filter(|h| h.latency_ms.is_some_and(|ms| ms > 200))
+        .collect();
+    if !slow_hops.is_empty() {
+        out.push(Diagnosis {
+            headline: "Slow authoritative path".into(),
+            severity: Severity::Warn,
+            evidence: slow_hops
+                .iter()
+                .map(|h| format!("based on: {} answered in {}ms", h.server, h.latency_ms.unwrap()))
+                .collect(),
         });
     }
 
@@ -246,6 +305,7 @@ fn short(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::net::IpAddr;
 
     fn row(resolver: &str, answers: &[&str], matches: Option<bool>, ttl: Option<u32>, err: bool) -> PropagationRow {
@@ -267,7 +327,7 @@ mod tests {
             row("a", &["1.2.3.4"], Some(true), Some(300), false),
             row("b", &["1.2.3.4"], Some(true), Some(300), false),
         ];
-        let d = analyze_propagation("A", &auth, &rows);
+        let d = analyze_propagation("A", &auth, &rows, chrono::Utc::now());
         assert_eq!(d.severity, Severity::Ok);
         assert!(d.evidence.iter().any(|e| e.contains("2/2")));
     }
@@ -280,7 +340,7 @@ mod tests {
             row("stale1", &["1.2.3.4"], Some(false), Some(3600), false),
             row("stale2", &["1.2.3.4"], Some(false), Some(1800), false),
         ];
-        let d = analyze_propagation("A", &auth, &rows);
+        let d = analyze_propagation("A", &auth, &rows, chrono::Utc::now());
         assert_eq!(d.severity, Severity::Warn);
         // Evidence should name the stale value and the worst-case TTL.
         assert!(d.evidence.iter().any(|e| e.contains("1.2.3.4")));
@@ -290,7 +350,7 @@ mod tests {
     #[test]
     fn unknown_authoritative_warns() {
         let rows = vec![row("a", &["1.2.3.4"], None, Some(300), false)];
-        let d = analyze_propagation("A", &[], &rows);
+        let d = analyze_propagation("A", &[], &rows, chrono::Utc::now());
         assert_eq!(d.severity, Severity::Warn);
     }
 
@@ -305,7 +365,7 @@ mod tests {
             CheckResult { name: "NS delegation".into(), severity: Severity::Err, detail: "mismatch X vs Y".into() },
             CheckResult { name: "SPF".into(), severity: Severity::Ok, detail: "fine".into() },
         ];
-        let out = synthesize(Some(&prop), &audit, &[]);
+        let out = synthesize(Some(&prop), &[], &audit, &[]);
         assert_eq!(out[0].severity, Severity::Err);
         assert!(out[0].headline.to_lowercase().contains("delegation"));
         assert!(out[0].evidence.iter().any(|e| e.contains("mismatch")));
@@ -323,7 +383,7 @@ mod tests {
             severity: Severity::Warn,
             detail: "serials differ across NS: [2024010101, 2024010105]".into(),
         }];
-        let out = synthesize(Some(&prop), &audit, &[]);
+        let out = synthesize(Some(&prop), &[], &audit, &[]);
         let lag: Vec<_> = out
             .iter()
             .filter(|d| d.headline.contains("zone versions") || d.evidence.iter().any(|e| e.contains("serials differ")))
@@ -340,9 +400,70 @@ mod tests {
             evidence: vec![],
         };
         let audit = vec![CheckResult { name: "SPF".into(), severity: Severity::Ok, detail: "ok".into() }];
-        let out = synthesize(Some(&prop), &audit, &[]);
+        let out = synthesize(Some(&prop), &[], &audit, &[]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].severity, Severity::Ok);
         assert!(out[0].headline.contains("No DNS problems"));
+    }
+
+    #[test]
+    fn stale_ttl_evidence_includes_wallclock_eta() {
+        let auth = vec!["5.6.7.8".to_string()];
+        let rows = vec![
+            row("good", &["5.6.7.8"], Some(true), Some(60), false),
+            row("stale", &["1.2.3.4"], Some(false), Some(3600), false),
+        ];
+        let now = chrono::Utc.with_ymd_and_hms(2026, 8, 5, 10, 0, 0).unwrap();
+        let d = analyze_propagation("A", &auth, &rows, now);
+        // 10:00 + 3600s = 11:00 UTC
+        assert!(d.evidence.iter().any(|e| e.contains("11:00")), "{:?}", d.evidence);
+    }
+
+    #[test]
+    fn latency_outlier_named_in_evidence() {
+        let mut rows = vec![
+            row("fast1", &["1.2.3.4"], Some(true), Some(300), false),
+            row("fast2", &["1.2.3.4"], Some(true), Some(300), false),
+            row("slow", &["1.2.3.4"], Some(true), Some(300), false),
+        ];
+        rows[0].latency_ms = Some(10);
+        rows[1].latency_ms = Some(12);
+        rows[2].latency_ms = Some(900);
+        let d = analyze_propagation("A", &["1.2.3.4".to_string()], &rows, chrono::Utc::now());
+        assert!(d.evidence.iter().any(|e| e.contains("slow") && e.contains("900")));
+    }
+
+    #[test]
+    fn dnssec_broken_names_failing_resolvers() {
+        let trace = vec![TraceHop {
+            zone: "example.com.".into(),
+            server: "x".into(),
+            latency_ms: Some(10),
+            note: None,
+            dnssec: Some("BROKEN: DS present but no DNSKEY".into()),
+            error: None,
+        }];
+        let rows = vec![
+            row("Quad9", &[], None, None, true), // errored resolver
+            row("Google", &["1.2.3.4"], Some(true), Some(60), false),
+        ];
+        let out = synthesize(None, &rows, &[], &trace);
+        let d = out.iter().find(|d| d.headline.contains("DNSSEC")).unwrap();
+        assert!(d.evidence.iter().any(|e| e.contains("Quad9")));
+    }
+
+    #[test]
+    fn slow_trace_hop_warns() {
+        let trace = vec![TraceHop {
+            zone: "com.".into(),
+            server: "a.gtld (1.2.3.4)".into(),
+            latency_ms: Some(450),
+            note: None,
+            dnssec: None,
+            error: None,
+        }];
+        let out = synthesize(None, &[], &[], &trace);
+        assert!(out.iter().any(|d| d.headline.contains("Slow authoritative")
+            && d.severity == Severity::Warn));
     }
 }

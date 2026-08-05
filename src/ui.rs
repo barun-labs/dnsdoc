@@ -162,7 +162,7 @@ fn sev_style(sev: Severity) -> (&'static str, Style) {
 fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
     // Split: reasoned diagnosis banner on top, resolver table below.
     let rows_present = !app.prop_rows.is_empty();
-    let diag = analyze_propagation(&format!("{:?}", app.rtype), &app.auth_answer, &app.prop_rows);
+    let diag = analyze_propagation(&format!("{:?}", app.rtype), &app.auth_answer, &app.prop_rows, chrono::Utc::now());
     let banner_h = if rows_present { (diag.evidence.len() as u16 + 4).min(10) } else { 3 };
     let split = Layout::default()
         .direction(Direction::Vertical)
@@ -369,9 +369,10 @@ fn draw_analysis(f: &mut Frame, app: &App, area: Rect) {
             &format!("{:?}", app.rtype),
             &app.auth_answer,
             &app.prop_rows,
+            chrono::Utc::now(),
         ))
     };
-    let diagnoses = synthesize(prop.as_ref(), &app.audit, &app.trace);
+    let diagnoses = synthesize(prop.as_ref(), &app.prop_rows, &app.audit, &app.trace);
 
     let mut items = vec![ListItem::new(ns_line(app)), ListItem::new(Line::from(""))];
     for (i, d) in diagnoses.iter().enumerate() {

@@ -129,6 +129,92 @@ pub fn check_apex_cname(has_cname: bool, other_types: &[String]) -> CheckResult 
     }
 }
 
+pub fn check_caa(records: &[String]) -> CheckResult {
+    if records.is_empty() {
+        ok("CAA", "no CAA record (any CA may issue)")
+    } else {
+        ok("CAA", format!("present: {}", records.join("; ")))
+    }
+}
+
+pub struct MxTargetInfo {
+    pub target: String,
+    pub is_ip_literal: bool,
+    pub has_cname: bool,
+    pub resolves: bool,
+}
+
+pub fn check_mx(infos: &[MxTargetInfo], null_mx: bool) -> CheckResult {
+    if null_mx {
+        return ok("MX", "null MX (domain sends no mail)");
+    }
+    if infos.is_empty() {
+        return warn("MX", "no MX records (mail falls back to A record)");
+    }
+    let mut problems = vec![];
+    let mut sev = Severity::Ok;
+    for i in infos {
+        if i.is_ip_literal {
+            problems.push(format!("{} is an IP literal (invalid)", i.target));
+            sev = Severity::Err;
+        } else if !i.resolves {
+            problems.push(format!("{} does not resolve", i.target));
+            sev = Severity::Err;
+        } else if i.has_cname {
+            problems.push(format!("{} is a CNAME (RFC 2181 violation)", i.target));
+            if sev == Severity::Ok { sev = Severity::Warn; }
+        }
+    }
+    match sev {
+        Severity::Ok => ok("MX", format!("{} target(s) resolve cleanly", infos.len())),
+        Severity::Warn => warn("MX", problems.join("; ")),
+        Severity::Err => err("MX", problems.join("; ")),
+    }
+}
+
+pub fn check_ns_redundancy(ns_list: &[(String, IpAddr)]) -> CheckResult {
+    if ns_list.len() < 2 {
+        return warn("NS redundancy", format!("only {} NS (2+ recommended)", ns_list.len()));
+    }
+    let v4_prefixes: BTreeSet<String> = ns_list
+        .iter()
+        .filter_map(|(_, ip)| match ip {
+            IpAddr::V4(v4) => {
+                let o = v4.octets();
+                Some(format!("{}.{}.{}", o[0], o[1], o[2]))
+            }
+            IpAddr::V6(_) => None,
+        })
+        .collect();
+    let v4_count = ns_list.iter().filter(|(_, ip)| ip.is_ipv4()).count();
+    if v4_count == ns_list.len() && v4_prefixes.len() == 1 {
+        warn("NS redundancy", format!("all {} NS in one /24 — single point of failure", ns_list.len()))
+    } else {
+        ok("NS redundancy", format!("{} NS across {} network(s)", ns_list.len(), v4_prefixes.len().max(1)))
+    }
+}
+
+pub fn check_soa_values(serial: u32, refresh: i32, retry: i32, expire: i32, minimum: u32) -> CheckResult {
+    let mut findings = vec![];
+    if !(1200..=86400).contains(&refresh) {
+        findings.push(format!("refresh {refresh}s outside 1200–86400"));
+    }
+    if retry >= refresh {
+        findings.push(format!("retry {retry}s >= refresh {refresh}s"));
+    }
+    if expire < 604800 {
+        findings.push(format!("expire {expire}s < 7d — secondaries drop the zone too soon"));
+    }
+    if minimum > 86400 {
+        findings.push(format!("negative-cache TTL {minimum}s > 1d"));
+    }
+    if findings.is_empty() {
+        ok("SOA sanity", format!("serial {serial}, timers sane"))
+    } else {
+        warn("SOA sanity", findings.join("; "))
+    }
+}
+
 // ---- async collectors (network) ----
 
 async fn parent_ns(domain: &str) -> Vec<String> {
@@ -164,6 +250,28 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
     }
     results.push(check_soa_serials(&serials));
 
+    // SOA sanity: timer values on the primary NS's SOA record
+    if let Some((_, ip)) = ns_list.first() {
+        if let Ok((resp, _)) = dns::raw_query(*ip, &domain, RecordType::SOA).await {
+            if let Some(r) = resp.answers().first() {
+                if let Ok(&RData::SOA(ref soa)) = r.data().try_into() {
+                    results.push(check_soa_values(
+                        soa.serial(),
+                        soa.refresh(),
+                        soa.retry(),
+                        soa.expire(),
+                        soa.minimum(),
+                    ));
+                }
+            }
+        }
+    }
+
+    // NS redundancy: 2+ nameservers spread across networks
+    if !ns_list.is_empty() {
+        results.push(check_ns_redundancy(&ns_list));
+    }
+
     // Lame server detection: each NS must set AA for its own zone
     let mut lame = vec![];
     for (name, ip) in &ns_list {
@@ -181,6 +289,10 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
     } else if !ns_list.is_empty() {
         results.push(err("Lame servers", format!("not authoritative / unreachable: {:?}", lame)));
     }
+
+    // CAA: which CAs may issue for the domain
+    let caa = dns::query(seed, &domain, RecordType::CAA).await;
+    results.push(check_caa(&caa.answers));
 
     // TXT-derived: SPF, DMARC
     let txts = dns::query(seed, &domain, RecordType::TXT).await.answers;
@@ -214,6 +326,33 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
     if !ttls.is_empty() {
         results.push(check_ttl(&ttls));
     }
+
+    // MX sanity: parse targets, check IP literals / CNAMEs / resolvability.
+    // MX rdata strings look like "10 mail.example.com.".
+    let mut infos = vec![];
+    let mut null_mx = false;
+    for ans in &mx.answers {
+        let Some(target) = ans.split_whitespace().last() else { continue };
+        let target = target.trim_end_matches('.');
+        if target.is_empty() && mx.answers.len() == 1 {
+            null_mx = true;
+            break;
+        }
+        if target.is_empty() {
+            continue;
+        }
+        let is_ip_literal = target.parse::<IpAddr>().is_ok();
+        let (has_cname, resolves) = if is_ip_literal {
+            (false, true)
+        } else {
+            let has_cname = !dns::query(seed, target, RecordType::CNAME).await.answers.is_empty();
+            let a_lookup = dns::query(seed, target, RecordType::A).await;
+            let aaaa = dns::query(seed, target, RecordType::AAAA).await;
+            (has_cname, !a_lookup.answers.is_empty() || !aaaa.answers.is_empty())
+        };
+        infos.push(MxTargetInfo { target: target.into(), is_ip_literal, has_cname, resolves });
+    }
+    results.push(check_mx(&infos, null_mx));
 
     // Apex CNAME
     let cname = dns::query(seed, &domain, RecordType::CNAME).await;
@@ -332,5 +471,108 @@ mod tests {
     #[test]
     fn no_apex_cname_ok() {
         assert_eq!(check_apex_cname(false, &s(&["A"])).severity, Severity::Ok);
+    }
+
+    #[test]
+    fn caa_absent_is_ok_note() {
+        let r = check_caa(&[]);
+        assert_eq!(r.severity, Severity::Ok);
+        assert!(r.detail.contains("any CA"));
+    }
+
+    #[test]
+    fn caa_present_lists_records() {
+        let r = check_caa(&s(&["0 issue \"letsencrypt.org\""]));
+        assert_eq!(r.severity, Severity::Ok);
+        assert!(r.detail.contains("letsencrypt"));
+    }
+
+    #[test]
+    fn mx_null_is_ok() {
+        let r = check_mx(&[], true);
+        assert_eq!(r.severity, Severity::Ok);
+        assert!(r.detail.to_lowercase().contains("null mx"));
+    }
+
+    #[test]
+    fn mx_unresolvable_target_errors() {
+        let infos = vec![MxTargetInfo {
+            target: "mail.example.com".into(),
+            is_ip_literal: false,
+            has_cname: false,
+            resolves: false,
+        }];
+        assert_eq!(check_mx(&infos, false).severity, Severity::Err);
+    }
+
+    #[test]
+    fn mx_cname_target_warns() {
+        let infos = vec![MxTargetInfo {
+            target: "mail.example.com".into(),
+            is_ip_literal: false,
+            has_cname: true,
+            resolves: true,
+        }];
+        assert_eq!(check_mx(&infos, false).severity, Severity::Warn);
+    }
+
+    #[test]
+    fn mx_ip_literal_errors() {
+        let infos = vec![MxTargetInfo {
+            target: "1.2.3.4".into(),
+            is_ip_literal: true,
+            has_cname: false,
+            resolves: true,
+        }];
+        assert_eq!(check_mx(&infos, false).severity, Severity::Err);
+    }
+
+    #[test]
+    fn mx_healthy_ok() {
+        let infos = vec![MxTargetInfo {
+            target: "mail.example.com".into(),
+            is_ip_literal: false,
+            has_cname: false,
+            resolves: true,
+        }];
+        assert_eq!(check_mx(&infos, false).severity, Severity::Ok);
+    }
+
+    #[test]
+    fn ns_single_warns() {
+        let r = check_ns_redundancy(&[("ns1.x.com".into(), "1.2.3.4".parse().unwrap())]);
+        assert_eq!(r.severity, Severity::Warn);
+    }
+
+    #[test]
+    fn ns_same_slash24_warns() {
+        let r = check_ns_redundancy(&[
+            ("ns1.x.com".into(), "1.2.3.4".parse().unwrap()),
+            ("ns2.x.com".into(), "1.2.3.9".parse().unwrap()),
+        ]);
+        assert_eq!(r.severity, Severity::Warn);
+        assert!(r.detail.contains("/24"));
+    }
+
+    #[test]
+    fn ns_diverse_ok() {
+        let r = check_ns_redundancy(&[
+            ("ns1.x.com".into(), "1.2.3.4".parse().unwrap()),
+            ("ns2.x.com".into(), "8.8.4.4".parse().unwrap()),
+        ]);
+        assert_eq!(r.severity, Severity::Ok);
+    }
+
+    #[test]
+    fn soa_sane_values_ok() {
+        let r = check_soa_values(2026080501, 7200, 3600, 1209600, 3600);
+        assert_eq!(r.severity, Severity::Ok);
+    }
+
+    #[test]
+    fn soa_bad_values_warn() {
+        // retry >= refresh and tiny expire
+        let r = check_soa_values(1, 7200, 14400, 3600, 3600);
+        assert_eq!(r.severity, Severity::Warn);
     }
 }
