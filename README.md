@@ -24,7 +24,7 @@ dns-tester               # start with an empty input box (press d to type)
 | Key        | Action                                  |
 |------------|-----------------------------------------|
 | `q`        | quit                                    |
-| `Tab` / `1`–`4` | switch tab                         |
+| `Tab` / `1`–`5` | switch tab                         |
 | `←` / `→`  | previous / next tab                     |
 | `r`        | re-run the current tab                  |
 | `t`        | cycle record type (Propagation)         |
@@ -46,6 +46,15 @@ dns-tester               # start with an empty input box (press d to type)
 - **Monitor** — polls the domain on an interval (default 60s), diffs each
   poll against the last, and logs changes. The change log persists to disk
   and reloads on the next start.
+- **Analysis** — runs all three checks and synthesizes ranked probable
+  causes, each stated as a plain-language call with the evidence it rests on
+  (a `based on:` line per fact). Example: *"Still propagating — 4 of 16
+  resolvers not yet updated · based on: 4 resolvers still serve [1.2.3.4],
+  stale answers carry TTL up to 3600s (~60m) before caches clear."* The same
+  evidence banner also sits atop the Propagation tab.
+
+Every verdict is backed by the data it was drawn from — no bare "looks
+broken" without the reason.
 
 ## Config
 

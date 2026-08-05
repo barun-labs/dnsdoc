@@ -17,6 +17,15 @@ pub struct CheckResult {
     pub detail: String,
 }
 
+/// A reasoned conclusion: a plain-language call plus the evidence it rests on.
+#[derive(Debug, Clone)]
+pub struct Diagnosis {
+    pub headline: String,
+    pub severity: Severity,
+    /// One line per fact the headline is "based on".
+    pub evidence: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PropagationRow {
     pub resolver: String,

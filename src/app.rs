@@ -11,16 +11,19 @@ pub enum Tab {
     Audit,
     Trace,
     Monitor,
+    Analysis,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Propagation, Tab::Audit, Tab::Trace, Tab::Monitor];
+    pub const ALL: [Tab; 5] =
+        [Tab::Propagation, Tab::Audit, Tab::Trace, Tab::Monitor, Tab::Analysis];
     pub fn title(&self) -> &'static str {
         match self {
             Tab::Propagation => "Propagation",
             Tab::Audit => "Audit",
             Tab::Trace => "Trace",
             Tab::Monitor => "Monitor",
+            Tab::Analysis => "Analysis",
         }
     }
     pub fn index(&self) -> usize {
@@ -35,6 +38,7 @@ pub enum Action {
     Quit,
     RunTab(Tab),
     StartMonitor,
+    RunAnalysis,
     DomainChanged,
 }
 
@@ -136,7 +140,7 @@ impl App {
                 self.tab = Tab::ALL[prev];
                 self.tab_action()
             }
-            KeyCode::Char(c @ '1'..='4') => {
+            KeyCode::Char(c @ '1'..='5') => {
                 let idx = c as usize - '1' as usize;
                 self.tab = Tab::ALL[idx];
                 self.tab_action()
@@ -164,6 +168,10 @@ impl App {
                     self.monitor_started = true;
                     Action::StartMonitor
                 }
+            }
+            Tab::Analysis => {
+                self.loading = true;
+                Action::RunAnalysis
             }
             t => {
                 self.loading = true;

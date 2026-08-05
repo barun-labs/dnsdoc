@@ -86,6 +86,16 @@ async fn run(
                             spawn_monitor(&app, &cfg, tx.clone());
                         }
                     }
+                    Action::RunAnalysis => {
+                        if !app.domain.is_empty() {
+                            // Gather fresh evidence from all three checks; the
+                            // Analysis view synthesizes as results arrive.
+                            app.trace.clear();
+                            spawn_tab(&app, &cfg, Tab::Propagation, tx.clone());
+                            spawn_tab(&app, &cfg, Tab::Audit, tx.clone());
+                            spawn_tab(&app, &cfg, Tab::Trace, tx.clone());
+                        }
+                    }
                     Action::DomainChanged => {
                         match validate_domain(&app.domain) {
                             Ok(d) => {
@@ -123,6 +133,8 @@ fn spawn_tab(app: &App, cfg: &Config, tab: Tab, tx: mpsc::Sender<Msg>) {
             tokio::spawn(checks::trace::run(domain, tx));
         }
         Tab::Monitor => spawn_monitor(app, cfg, tx),
+        // Analysis fans out to the other checks via Action::RunAnalysis.
+        Tab::Analysis => {}
     }
 }
 

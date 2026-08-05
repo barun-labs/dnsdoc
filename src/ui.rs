@@ -5,8 +5,9 @@ use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Tab
 use ratatui::Frame;
 
 use crate::app::{App, Tab};
+use crate::checks::analysis::{analyze_propagation, synthesize};
 use crate::checks::propagation::consensus;
-use crate::types::Severity;
+use crate::types::{Diagnosis, Severity};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -24,8 +25,36 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Audit => draw_audit(f, app, chunks[1]),
         Tab::Trace => draw_trace(f, app, chunks[1]),
         Tab::Monitor => draw_monitor(f, app, chunks[1]),
+        Tab::Analysis => draw_analysis(f, app, chunks[1]),
     }
     draw_status(f, app, chunks[2]);
+}
+
+fn sev_color(sev: Severity) -> Color {
+    match sev {
+        Severity::Ok => Color::Green,
+        Severity::Warn => Color::Yellow,
+        Severity::Err => Color::Red,
+    }
+}
+
+/// Render a diagnosis as a headline line plus indented "based on" evidence.
+fn diagnosis_items(d: &Diagnosis) -> Vec<ListItem<'static>> {
+    let (tag, _) = sev_style(d.severity);
+    let mut items = vec![ListItem::new(Line::from(vec![
+        Span::styled(
+            format!("{tag} "),
+            Style::default().fg(sev_color(d.severity)).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(d.headline.clone(), Style::default().add_modifier(Modifier::BOLD)),
+    ]))];
+    for e in &d.evidence {
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled("    based on: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(e.clone()),
+        ])));
+    }
+    items
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
@@ -54,21 +83,37 @@ fn sev_style(sev: Severity) -> (&'static str, Style) {
 }
 
 fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
-    let (agree, answered) = consensus(&app.prop_rows);
-    let total = app.prop_rows.len();
-    let verdict = if answered == 0 {
-        "querying…".to_string()
-    } else if agree == answered && answered == total {
-        "fully propagated".to_string()
+    // Split: reasoned diagnosis banner on top, resolver table below.
+    let rows_present = !app.prop_rows.is_empty();
+    let diag = analyze_propagation(&format!("{:?}", app.rtype), &app.auth_answer, &app.prop_rows);
+    let banner_h = if rows_present { (diag.evidence.len() as u16 + 3).min(9) } else { 3 };
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(banner_h), Constraint::Min(3)])
+        .split(area);
+
+    if rows_present {
+        let items = diagnosis_items(&diag);
+        f.render_widget(
+            List::new(items)
+                .block(Block::default().borders(Borders::ALL).title(" Diagnosis ")),
+            split[0],
+        );
     } else {
-        format!("{agree}/{answered} resolvers match authoritative — still propagating")
-    };
+        f.render_widget(
+            Paragraph::new(if app.loading { "querying resolvers…" } else { "press 'r' to run" })
+                .block(Block::default().borders(Borders::ALL).title(" Diagnosis ")),
+            split[0],
+        );
+    }
+
+    let (agree, answered) = consensus(&app.prop_rows);
     let auth = if app.auth_answer.is_empty() {
-        "(authoritative unknown)".to_string()
+        "unknown".to_string()
     } else {
         app.auth_answer.join(", ")
     };
-    let title = format!(" {:?} — {} | auth: {} ", app.rtype, verdict, auth);
+    let title = format!(" {:?} — {agree}/{answered} match | auth: {auth} ", app.rtype);
 
     let header = Row::new(["Resolver", "Answer", "TTL", "ms", "✓"])
         .style(Style::default().add_modifier(Modifier::BOLD));
@@ -110,7 +155,7 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
     )
     .header(header)
     .block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(table, area);
+    f.render_widget(table, split[1]);
 }
 
 fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
@@ -224,13 +269,53 @@ fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn draw_analysis(f: &mut Frame, app: &App, area: Rect) {
+    let have_data = !app.prop_rows.is_empty() || !app.audit.is_empty() || !app.trace.is_empty();
+    if !have_data {
+        f.render_widget(
+            Paragraph::new(if app.loading {
+                "gathering evidence — running propagation, audit and trace…"
+            } else {
+                "press 'r' to run all checks and synthesize a diagnosis"
+            })
+            .block(Block::default().borders(Borders::ALL).title(" Analysis ")),
+            area,
+        );
+        return;
+    }
+
+    let prop = if app.prop_rows.is_empty() {
+        None
+    } else {
+        Some(analyze_propagation(
+            &format!("{:?}", app.rtype),
+            &app.auth_answer,
+            &app.prop_rows,
+        ))
+    };
+    let diagnoses = synthesize(prop.as_ref(), &app.audit, &app.trace);
+
+    let mut items = vec![];
+    for (i, d) in diagnoses.iter().enumerate() {
+        if i > 0 {
+            items.push(ListItem::new(Line::from("")));
+        }
+        items.extend(diagnosis_items(d));
+    }
+    let title = format!(" Analysis — {} probable finding(s), most severe first ", diagnoses.len());
+    f.render_widget(
+        List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
+        area,
+    );
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let text = if app.input_mode {
         format!("domain> {}_", app.input_buf)
     } else if !app.status.is_empty() {
         app.status.clone()
     } else {
-        "q quit · Tab/1-4 switch · r rerun · t record-type · d domain".to_string()
+        "q quit · Tab/1-5 switch · r rerun · t record-type · d domain".to_string()
     };
     f.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::Gray)),
