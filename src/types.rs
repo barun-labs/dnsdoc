@@ -37,12 +37,22 @@ pub struct PropagationRow {
     pub matches_auth: Option<bool>,
 }
 
+/// One row of the Sweep tab: a name/type probe and what answered it.
+#[derive(Debug, Clone)]
+pub struct SweepRow {
+    pub name: String,
+    pub rtype: String,
+    pub answers: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TraceHop {
     pub zone: String,
     pub server: String,
     pub latency_ms: Option<u128>,
     pub note: Option<String>,
+    /// Full referral NS set: "name (ip)" when glue known, bare name otherwise.
+    pub ns: Vec<String>,
     pub dnssec: Option<String>,
     pub error: Option<String>,
 }
@@ -53,12 +63,20 @@ pub struct MonitorEvent {
     pub rtype: String,
     pub old: Vec<String>,
     pub new: Vec<String>,
+    #[serde(default)]
+    pub flap: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
     Propagation(Vec<PropagationRow>),
+    /// Propagation run started; payload = number of resolvers being queried.
+    PropStart(usize),
+    /// One resolver finished; row already carries matches_auth.
+    PropRow(PropagationRow),
     AuthAnswer(Vec<String>),
+    /// Authoritative NS set as "ns1.example.com. (1.2.3.4)" display strings.
+    AuthNs(Vec<String>),
     Audit(Vec<CheckResult>),
     Trace(Vec<TraceHop>),
     TraceHopArrived(TraceHop),
@@ -67,7 +85,13 @@ pub enum Msg {
         rtype: String,
         answers: Vec<String>,
         ttl: Option<u32>,
+        latency_ms: u64,
     },
+    Dnssec(Vec<CheckResult>),
+    Mail(Vec<CheckResult>),
+    SweepStart,
+    SweepRow(SweepRow),
+    Reverse(Vec<String>),
     #[allow(dead_code)] // reserved for surfacing task errors to the status line
     Error(String),
 }

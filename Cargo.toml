@@ -1,7 +1,8 @@
 [package]
 name = "dnsdoc"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
+repository = "https://github.com/barun-labs/dnsdoc"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -10,7 +11,8 @@ crossterm = "0.29.0"
 dirs = "6.0.0"
 futures = "0.3.33"
 hickory-client = "0.25.2"
-hickory-proto = "0.25"
+# dnssec-ring: typed RRSIG/DS/DNSKEY rdata (RData::DNSSEC) for the DNSSEC tab
+hickory-proto = { version = "0.25", features = ["dnssec-ring"] }
 hickory-resolver = "0.25"
 rand = "0.10.2"
 ratatui = "0.30.2"

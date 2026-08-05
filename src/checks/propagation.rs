@@ -12,16 +12,28 @@ pub async fn run(
     resolvers: Vec<Resolver>,
     tx: mpsc::Sender<Msg>,
 ) {
-    let auth = dns::authoritative_answer(&domain, rtype).await.ok();
+    let _ = tx.send(Msg::PropStart(resolvers.len())).await;
+    let ns = dns::authoritative_ns(&domain).await.ok();
+    let auth = match &ns {
+        Some(ns) => {
+            let display: Vec<String> =
+                ns.iter().map(|(name, ip)| format!("{name} ({ip})")).collect();
+            let _ = tx.send(Msg::AuthNs(display)).await;
+            dns::answer_from_ns(ns, &domain, rtype).await.ok()
+        }
+        None => None,
+    };
     if let Some(a) = &auth {
         let _ = tx.send(Msg::AuthAnswer(a.clone())).await;
     }
 
     let futs = resolvers.into_iter().map(|r| {
         let domain = domain.clone();
+        let auth = auth.clone();
+        let tx = tx.clone();
         async move {
             let out = dns::query(r.ip, &domain, rtype).await;
-            PropagationRow {
+            let mut row = PropagationRow {
                 resolver: r.name,
                 ip: r.ip,
                 answers: out.answers,
@@ -33,14 +45,14 @@ pub async fn run(
                 },
                 error: out.error,
                 matches_auth: None,
-            }
+            };
+            row.matches_auth = mark_match(&row, auth.as_deref());
+            let _ = tx.send(Msg::PropRow(row.clone())).await;
+            row
         }
     });
-    let mut rows: Vec<PropagationRow> = join_all(futs).await;
-    for row in &mut rows {
-        row.matches_auth = mark_match(row, auth.as_deref());
-    }
-    let _ = tx.send(Msg::Propagation(rows)).await;
+    let rows: Vec<PropagationRow> = join_all(futs).await;
+    let _ = tx.send(Msg::Propagation(rows)).await; // final ordered set, unchanged
 }
 
 fn mark_match(row: &PropagationRow, auth: Option<&[String]>) -> Option<bool> {
