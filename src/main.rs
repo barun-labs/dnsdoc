@@ -1,10 +1,3 @@
-mod app;
-mod checks;
-mod config;
-mod dns;
-mod types;
-mod ui;
-
 use std::io;
 use std::time::Duration;
 
@@ -17,9 +10,11 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
-use app::{Action, App, Tab};
-use config::Config;
-use types::{validate_domain, Msg};
+use dns_tester::app::{Action, App, Tab};
+use dns_tester::checks;
+use dns_tester::config::Config;
+use dns_tester::types::{self, validate_domain, Msg};
+use dns_tester::ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
