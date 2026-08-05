@@ -71,6 +71,7 @@ async fn run(
 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
+        app.tick = app.tick.wrapping_add(1);
 
         // Drain any ready messages.
         while let Ok(msg) = rx.try_recv() {

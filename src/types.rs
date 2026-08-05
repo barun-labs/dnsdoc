@@ -60,6 +60,10 @@ pub struct MonitorEvent {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Propagation(Vec<PropagationRow>),
+    /// Propagation run started; payload = number of resolvers being queried.
+    PropStart(usize),
+    /// One resolver finished; row already carries matches_auth.
+    PropRow(PropagationRow),
     AuthAnswer(Vec<String>),
     /// Authoritative NS set as "ns1.example.com. (1.2.3.4)" display strings.
     AuthNs(Vec<String>),

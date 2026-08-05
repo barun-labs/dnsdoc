@@ -74,6 +74,10 @@ pub struct App {
     pub monitor_started: bool,
     pub status: String,
     pub loading: bool,
+    /// Resolver count of the in-flight propagation run (for the counter).
+    pub prop_expected: usize,
+    /// Frame counter, advanced once per event-loop iteration (spinner).
+    pub tick: u64,
     /// Rows to skip in the current tab body (Up/Down keys).
     pub scroll: u16,
     pub help_open: bool,
@@ -103,6 +107,8 @@ impl App {
             monitor_started: false,
             status: String::new(),
             loading: false,
+            prop_expected: 0,
+            tick: 0,
             scroll: 0,
             help_open: false,
             input_cursor: 0,
@@ -312,6 +318,11 @@ impl App {
                 self.prop_rows = rows;
                 self.loading = false;
             }
+            Msg::PropStart(n) => {
+                self.prop_rows.clear();
+                self.prop_expected = n;
+            }
+            Msg::PropRow(row) => self.prop_rows.push(row),
             Msg::AuthAnswer(a) => self.auth_answer = a,
             Msg::AuthNs(ns) => self.auth_ns = ns,
             Msg::Audit(r) => {
@@ -511,6 +522,25 @@ mod tests {
         let before = a.input_cursor;
         a.handle_key(key(KeyCode::Right));
         assert_eq!(a.input_cursor, before + 1);
+    }
+
+    #[test]
+    fn prop_start_resets_rows_and_sets_expected() {
+        let mut a = app();
+        a.prop_rows.push(crate::types::PropagationRow {
+            resolver: "old".into(), ip: "1.1.1.1".parse().unwrap(),
+            answers: vec![], ttl: None, latency_ms: None, error: None, matches_auth: None,
+        });
+        a.handle_msg(Msg::PropStart(16));
+        assert!(a.prop_rows.is_empty());
+        assert_eq!(a.prop_expected, 16);
+        let row = crate::types::PropagationRow {
+            resolver: "r1".into(), ip: "1.1.1.1".parse().unwrap(),
+            answers: vec!["1.2.3.4".into()], ttl: Some(60), latency_ms: Some(5),
+            error: None, matches_auth: Some(true),
+        };
+        a.handle_msg(Msg::PropRow(row));
+        assert_eq!(a.prop_rows.len(), 1);
     }
 
     #[test]

@@ -12,6 +12,12 @@ use crate::checks::analysis::{analyze_propagation, synthesize};
 use crate::checks::propagation::consensus;
 use crate::types::{Diagnosis, Severity};
 
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+pub fn spinner_frame(tick: u64) -> char {
+    SPINNER[(tick % 10) as usize]
+}
+
 /// Skip `scroll` items and attach a scrollbar when content overflows.
 fn scrolled_list(f: &mut Frame, area: Rect, items: Vec<ListItem<'static>>, block: Block<'static>, scroll: u16) {
     let total = items.len();
@@ -239,8 +245,17 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
         );
     } else {
         f.render_widget(
-            Paragraph::new(if app.loading { "querying resolvers…" } else { "press 'r' to run" })
-                .block(Block::default().borders(Borders::ALL).title(" Diagnosis ")),
+            Paragraph::new(if app.loading {
+                format!(
+                    "{} querying resolvers… {}/{}",
+                    spinner_frame(app.tick),
+                    app.prop_rows.len(),
+                    app.prop_expected
+                )
+            } else {
+                "press 'r' to run".to_string()
+            })
+            .block(Block::default().borders(Borders::ALL).title(" Diagnosis ")),
             split[0],
         );
     }
@@ -251,7 +266,15 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
     } else {
         app.auth_answer.join(", ")
     };
-    let title = format!(" {:?} — {agree}/{answered} match | auth: {auth} ", app.rtype);
+    let mut title = format!(" {:?} — {agree}/{answered} match | auth: {auth} ", app.rtype);
+    if app.loading {
+        title.push_str(&format!(
+            " {} {}/{} answered ",
+            spinner_frame(app.tick),
+            app.prop_rows.len(),
+            app.prop_expected
+        ));
+    }
 
     let header = Row::new(["Resolver", "Answer", "TTL", "ms", "✓"])
         .style(Style::default().add_modifier(Modifier::BOLD));
@@ -313,7 +336,11 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if app.audit.is_empty() {
-        vec![ListItem::new(if app.loading { "running checks…" } else { "press 'r' to run audit" })]
+        vec![ListItem::new(if app.loading {
+            format!("{} running checks…", spinner_frame(app.tick))
+        } else {
+            "press 'r' to run audit".to_string()
+        })]
     } else {
         app.audit
             .iter()
@@ -338,7 +365,11 @@ fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_trace(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if app.trace.is_empty() {
-        vec![ListItem::new(if app.loading { "tracing…" } else { "press 'r' to trace delegation" })]
+        vec![ListItem::new(if app.loading {
+            format!("{} tracing…", spinner_frame(app.tick))
+        } else {
+            "press 'r' to trace delegation".to_string()
+        })]
     } else {
         app.trace
             .iter()
@@ -497,4 +528,17 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(text).style(Style::default().fg(Color::Gray)),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spinner_cycles() {
+        let a = spinner_frame(0);
+        let b = spinner_frame(1);
+        assert_ne!(a, b);
+        assert_eq!(spinner_frame(0), spinner_frame(10)); // 10 frames
+    }
 }
