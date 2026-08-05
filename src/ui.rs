@@ -331,13 +331,21 @@ fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
         app.monitor_log
             .iter()
             .map(|e| {
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{} ", e.timestamp), Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{} ", e.rtype), Style::default().fg(Color::Cyan)),
-                    Span::styled(e.old.join(","), Style::default().fg(Color::Red)),
-                    Span::raw(" → "),
-                    Span::styled(e.new.join(","), Style::default().fg(Color::Green)),
-                ]))
+                if e.flap {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("{} ", e.timestamp), Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{} {} → {} ↻ round-robin?", e.rtype, e.old.join(","), e.new.join(",")),
+                            Style::default().fg(Color::DarkGray)),
+                    ]))
+                } else {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("{} ", e.timestamp), Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{} ", e.rtype), Style::default().fg(Color::Cyan)),
+                        Span::styled(e.old.join(","), Style::default().fg(Color::Red)),
+                        Span::raw(" → "),
+                        Span::styled(e.new.join(","), Style::default().fg(Color::Green)),
+                    ]))
+                }
             })
             .collect()
     };

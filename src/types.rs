@@ -53,6 +53,8 @@ pub struct MonitorEvent {
     pub rtype: String,
     pub old: Vec<String>,
     pub new: Vec<String>,
+    #[serde(default)]
+    pub flap: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,14 @@ pub fn diff(old: &[String], new: &[String]) -> bool {
     a.sort();
     b.sort();
     a != b
+}
+
+/// Record `new` in the seen-set; true when this exact answer set was already
+/// seen before for this record type (round-robin rotation, not a real change).
+pub fn note_and_check_flap(seen: &mut HashSet<Vec<String>>, new: &[String]) -> bool {
+    let mut key = new.to_vec();
+    key.sort();
+    !seen.insert(key)
 }
 
 pub fn load_history(path: &Path) -> Vec<MonitorEvent> {
@@ -54,11 +62,14 @@ pub async fn run(
 ) {
     let seed: IpAddr = "8.8.8.8".parse().unwrap();
     let mut last: HashMap<String, Vec<String>> = HashMap::new();
+    let mut seen: HashMap<String, HashSet<Vec<String>>> = HashMap::new();
 
     loop {
         for rtype in &rtypes {
             let out = dns::query(seed, &domain, *rtype).await;
             let key = format!("{rtype:?}");
+            // Seed/mark this observation in the seen-set (first time counts as seen).
+            let flap = note_and_check_flap(seen.entry(key.clone()).or_default(), &out.answers);
             let _ = tx
                 .send(Msg::MonitorSnapshot {
                     rtype: key.clone(),
@@ -74,6 +85,7 @@ pub async fn run(
                         rtype: key.clone(),
                         old: prev.clone(),
                         new: out.answers.clone(),
+                        flap,
                     };
                     append_history(&history_path, &ev);
                     let _ = tx.send(Msg::Monitor(ev)).await;
@@ -109,6 +121,7 @@ mod tests {
             rtype: "A".into(),
             old: vec!["1.1.1.1".into()],
             new: vec!["2.2.2.2".into()],
+            flap: false,
         };
         append_history(&path, &ev);
         append_history(&path, &ev);
@@ -116,5 +129,29 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].new, vec!["2.2.2.2".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flap_detected_when_set_seen_before() {
+        let mut seen: std::collections::HashSet<Vec<String>> = Default::default();
+        let a = vec!["1.1.1.1".to_string()];
+        let b = vec!["2.2.2.2".to_string()];
+        assert!(!note_and_check_flap(&mut seen, &a)); // first time: not a flap
+        assert!(!note_and_check_flap(&mut seen, &b)); // new set: not a flap
+        assert!(note_and_check_flap(&mut seen, &a));  // back to a: flap
+    }
+
+    #[test]
+    fn flap_normalizes_order() {
+        let mut seen: std::collections::HashSet<Vec<String>> = Default::default();
+        assert!(!note_and_check_flap(&mut seen, &["b".to_string(), "a".to_string()]));
+        assert!(note_and_check_flap(&mut seen, &["a".to_string(), "b".to_string()]));
+    }
+
+    #[test]
+    fn old_history_lines_without_flap_still_parse() {
+        let line = r#"{"timestamp":"2026-08-05T00:00:00Z","rtype":"A","old":["1.1.1.1"],"new":["2.2.2.2"]}"#;
+        let ev: MonitorEvent = serde_json::from_str(line).unwrap();
+        assert!(!ev.flap);
     }
 }
