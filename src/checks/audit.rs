@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::dns;
 use crate::types::{CheckResult, Msg, Severity};
 
-const DKIM_SELECTORS: &[&str] = &["default", "google", "k1", "s1", "selector1", "selector2"];
+pub const DKIM_SELECTORS: &[&str] = &["default", "google", "k1", "s1", "selector1", "selector2"];
 
 fn ok(name: &str, detail: impl Into<String>) -> CheckResult {
     CheckResult { name: name.into(), severity: Severity::Ok, detail: detail.into() }

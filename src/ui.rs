@@ -527,7 +527,6 @@ fn draw_dnssec(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Placeholder until the Mail task fills in real checks.
 fn draw_mail(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if app.mail.is_empty() {
         vec![ListItem::new(if app.loading {
