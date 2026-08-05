@@ -6,6 +6,24 @@ use std::collections::BTreeMap;
 
 use crate::types::{CheckResult, Diagnosis, PropagationRow, Severity, TraceHop};
 
+/// Probable cause for a query error code, case-insensitive contains-match.
+pub fn explain_error(err: &str) -> Option<&'static str> {
+    let e = err.to_lowercase();
+    if e.contains("timeout") {
+        Some("no response — server down, port 53 filtered, or rate limiting")
+    } else if e.contains("refused") {
+        Some("server declines this query — not authoritative for the zone, query ACL, or recursion denied")
+    } else if e.contains("servfail") {
+        Some("server-side failure — DNSSEC validation failure, lame delegation, or broken upstream")
+    } else if e.contains("nxdomain") {
+        Some("name does not exist here — stale negative cache or split-horizon view")
+    } else if e.contains("notimp") {
+        Some("server does not implement this query type")
+    } else {
+        None
+    }
+}
+
 fn approx_minutes(secs: u32) -> String {
     if secs >= 60 {
         format!("~{}m", secs / 60)
@@ -24,7 +42,6 @@ pub fn analyze_propagation(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Diagnosis {
     let answered: Vec<&PropagationRow> = rows.iter().filter(|r| r.error.is_none()).collect();
-    let timeouts = rows.len() - answered.len();
 
     if answered.is_empty() {
         return Diagnosis {
@@ -107,8 +124,26 @@ pub fn analyze_propagation(
             ));
         }
     }
-    if timeouts > 0 {
-        evidence.push(format!("{timeouts} resolver(s) timed out (excluded from the count)"));
+    // Group errored rows by their error kind; each kind gets one evidence
+    // line naming the resolvers, with a probable cause when we can explain it.
+    let mut err_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for r in rows.iter().filter(|r| r.error.is_some()) {
+        err_groups
+            .entry(r.error.clone().unwrap())
+            .or_default()
+            .push(r.resolver.clone());
+    }
+    for (kind, resolvers) in &err_groups {
+        let mut line = format!(
+            "{} resolver(s) {} ({})",
+            resolvers.len(),
+            kind,
+            resolvers.join(", ")
+        );
+        if let Some(why) = explain_error(kind) {
+            line.push_str(&format!(" — {why}"));
+        }
+        evidence.push(line);
     }
 
     let (headline, severity) = if differing.is_empty() {
@@ -318,6 +353,38 @@ mod tests {
             error: if err { Some("timeout".into()) } else { None },
             matches_auth: matches,
         }
+    }
+
+    #[test]
+    fn explain_error_covers_common_codes() {
+        assert!(explain_error("timeout").unwrap().contains("filtered"));
+        assert!(explain_error("REFUSED").unwrap().contains("ACL"));
+        assert!(explain_error("SERVFAIL").unwrap().contains("DNSSEC"));
+        assert!(explain_error("NXDOMAIN").unwrap().contains("negative cache"));
+        assert!(explain_error("weird proto error").is_none());
+    }
+
+    #[test]
+    fn errored_resolvers_grouped_with_explanation() {
+        let auth = vec!["1.2.3.4".to_string()];
+        let rows = vec![
+            row("good", &["1.2.3.4"], Some(true), Some(60), false),
+            {
+                let mut r = row("blocked1", &[], None, None, false);
+                r.error = Some("REFUSED".into());
+                r
+            },
+            {
+                let mut r = row("blocked2", &[], None, None, false);
+                r.error = Some("REFUSED".into());
+                r
+            },
+        ];
+        let d = analyze_propagation("A", &auth, &rows, chrono::Utc::now());
+        assert!(d.evidence.iter().any(|e|
+            e.contains("2 resolver(s) REFUSED")
+                && e.contains("blocked1")
+                && e.contains("ACL")));
     }
 
     #[test]

@@ -389,7 +389,10 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|r| {
             let (answer, style) = match &r.error {
-                Some(e) => (e.clone(), Style::default().fg(Color::DarkGray)),
+                // Timeout is a transport-level miss (dim); rcode errors like
+                // REFUSED/SERVFAIL are real server answers — show them red.
+                Some(e) if e == "timeout" => (e.clone(), Style::default().fg(Color::DarkGray)),
+                Some(e) => (e.clone(), Style::default().fg(Color::Red)),
                 None => (
                     if r.answers.is_empty() { "(empty)".into() } else { r.answers.join(", ") },
                     Style::default(),

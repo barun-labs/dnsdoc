@@ -72,7 +72,8 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
             error: None,
         };
 
-        match dns::raw_query(server_ip, zone.trim_end_matches('.'), RecordType::NS).await {
+        // RD=0: ask the server for its own delegation data, no recursion.
+        match dns::raw_query_opts(server_ip, zone.trim_end_matches('.'), RecordType::NS, false).await {
             Ok((resp, latency)) => {
                 hop.latency_ms = Some(latency);
                 // Referral NS come from answer or authority section.

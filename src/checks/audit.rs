@@ -217,6 +217,14 @@ pub fn check_soa_values(serial: u32, refresh: i32, retry: i32, expire: i32, mini
 
 // ---- async collectors (network) ----
 
+/// Serial from the first SOA record in a raw response, if any.
+fn soa_serial(resp: &hickory_proto::xfer::DnsResponse) -> Option<u32> {
+    resp.answers().first().and_then(|r| match r.data().try_into() {
+        Ok(&RData::SOA(ref soa)) => Some(soa.serial()),
+        _ => None,
+    })
+}
+
 async fn parent_ns(domain: &str) -> Vec<String> {
     // Ask a public resolver's view of the delegation from the TLD by querying
     // NS at the registry. hickory's recursive resolver returns the zone's NS;
@@ -239,20 +247,22 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
     let child: Vec<String> = ns_list.iter().map(|(n, _)| n.clone()).collect();
     results.push(check_ns_consistency(&parent, &child));
 
-    // SOA serials from each authoritative NS
+    // SOA serials from each authoritative NS (RD=0: no recursion)
     let mut serials = vec![];
     for (name, ip) in &ns_list {
-        let out = dns::query(*ip, &domain, RecordType::SOA).await;
-        let serial = out.answers.first().and_then(|a| {
-            a.rsplit("serial=").next().and_then(|s| s.trim().parse::<u32>().ok())
-        });
+        let serial = match dns::raw_query_opts(*ip, &domain, RecordType::SOA, false).await {
+            Ok((resp, _)) => soa_serial(&resp),
+            Err(_) => None,
+        };
         serials.push((name.clone(), serial));
     }
-    results.push(check_soa_serials(&serials));
+    let mut soa_serial_check = check_soa_serials(&serials);
+    soa_serial_check.detail = format!("{} [RD=0, no recursion]", soa_serial_check.detail);
+    results.push(soa_serial_check);
 
     // SOA sanity: timer values on the primary NS's SOA record
     if let Some((_, ip)) = ns_list.first() {
-        if let Ok((resp, _)) = dns::raw_query(*ip, &domain, RecordType::SOA).await {
+        if let Ok((resp, _)) = dns::raw_query_opts(*ip, &domain, RecordType::SOA, false).await {
             if let Some(r) = resp.answers().first() {
                 if let Ok(&RData::SOA(ref soa)) = r.data().try_into() {
                     results.push(check_soa_values(
@@ -272,10 +282,10 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
         results.push(check_ns_redundancy(&ns_list));
     }
 
-    // Lame server detection: each NS must set AA for its own zone
+    // Lame server detection: each NS must set AA for its own zone (RD=0)
     let mut lame = vec![];
     for (name, ip) in &ns_list {
-        match dns::raw_query(*ip, &domain, RecordType::SOA).await {
+        match dns::raw_query_opts(*ip, &domain, RecordType::SOA, false).await {
             Ok((resp, _)) => {
                 if !resp.header().authoritative() || resp.response_code() != ResponseCode::NoError {
                     lame.push(name.clone());
@@ -284,10 +294,14 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
             Err(_) => lame.push(format!("{name} (unreachable)")),
         }
     }
-    if lame.is_empty() && !ns_list.is_empty() {
-        results.push(ok("Lame servers", format!("all {} NS authoritative", ns_list.len())));
-    } else if !ns_list.is_empty() {
-        results.push(err("Lame servers", format!("not authoritative / unreachable: {:?}", lame)));
+    if !ns_list.is_empty() {
+        let mut lame_check = if lame.is_empty() {
+            ok("Lame servers", format!("all {} NS authoritative", ns_list.len()))
+        } else {
+            err("Lame servers", format!("not authoritative / unreachable: {:?}", lame))
+        };
+        lame_check.detail = format!("{} [RD=0, no recursion]", lame_check.detail);
+        results.push(lame_check);
     }
 
     // CAA: which CAs may issue for the domain
@@ -364,7 +378,7 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
     // Open AXFR (zone transfer) — security
     let mut axfr_open = vec![];
     for (name, ip) in &ns_list {
-        if let Ok((resp, _)) = dns::raw_query(*ip, &domain, RecordType::AXFR).await {
+        if let Ok((resp, _)) = dns::raw_query_opts(*ip, &domain, RecordType::AXFR, false).await {
             let has_records = resp.answers().iter().any(|r| {
                 matches!(r.data().try_into(), Ok(&RData::SOA(_)))
                     || resp.answers().len() > 1

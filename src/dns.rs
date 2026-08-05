@@ -2,8 +2,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
-use hickory_client::client::{Client, ClientHandle};
-use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
+use hickory_client::client::Client;
+use hickory_proto::rr::{Name, RData, RecordType};
+use hickory_proto::xfer::DnsHandle;
 use hickory_proto::runtime::TokioRuntimeProvider;
 use hickory_proto::udp::UdpClientStream;
 use hickory_proto::xfer::DnsResponse;
@@ -57,13 +58,35 @@ pub async fn raw_query(
     domain: &str,
     rtype: RecordType,
 ) -> Result<(DnsResponse, u128)> {
+    raw_query_opts(server, domain, rtype, true).await
+}
+
+/// Raw query with explicit recursion-desired control. `rd = false` is the
+/// authoritative-server mode: the server must answer from its own zone data
+/// and must not recurse on our behalf.
+pub async fn raw_query_opts(
+    server: IpAddr,
+    domain: &str,
+    rtype: RecordType,
+    rd: bool,
+) -> Result<(DnsResponse, u128)> {
+    use futures::StreamExt;
+    use hickory_proto::op::{Message, MessageType, OpCode, Query};
     let name = Name::from_ascii(format!("{domain}."))?;
     let start = Instant::now();
     let resp = tokio::time::timeout(QUERY_TIMEOUT, async {
-        let mut client = connect(server).await?;
+        let client = connect(server).await?;
+        let mut msg = Message::new();
+        msg.add_query(Query::query(name, rtype))
+            .set_id(rand::random())
+            .set_message_type(MessageType::Query)
+            .set_op_code(OpCode::Query)
+            .set_recursion_desired(rd);
         client
-            .query(name, DNSClass::IN, rtype)
+            .send(msg)
+            .next()
             .await
+            .ok_or_else(|| anyhow!("no response"))?
             .map_err(|e| anyhow!(e))
     })
     .await
@@ -75,6 +98,25 @@ pub async fn query(server: IpAddr, domain: &str, rtype: RecordType) -> QueryOutc
     let start = Instant::now();
     match raw_query(server, domain, rtype).await {
         Ok((resp, latency_ms)) => {
+            // Non-NoError rcodes are answers too — surface them as errors so
+            // "no answers" never masquerades as a silent empty reply.
+            let rcode = resp.response_code();
+            if rcode != hickory_proto::op::ResponseCode::NoError {
+                let code = match rcode {
+                    hickory_proto::op::ResponseCode::Refused => "REFUSED".to_string(),
+                    hickory_proto::op::ResponseCode::ServFail => "SERVFAIL".to_string(),
+                    hickory_proto::op::ResponseCode::NXDomain => "NXDOMAIN".to_string(),
+                    hickory_proto::op::ResponseCode::NotImp => "NOTIMP".to_string(),
+                    hickory_proto::op::ResponseCode::FormErr => "FORMERR".to_string(),
+                    other => other.to_string().to_uppercase(),
+                };
+                return QueryOutcome {
+                    answers: vec![],
+                    ttl: None,
+                    latency_ms,
+                    error: Some(code),
+                };
+            }
             let mut answers: Vec<String> = resp
                 .answers()
                 .iter()
