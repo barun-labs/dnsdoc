@@ -1,4 +1,6 @@
 FROM rust:1-slim AS build
+# gcc/perl: the dnssec-ring feature pulls `ring`, which compiles C at build time.
+RUN apt-get update && apt-get install -y --no-install-recommends gcc perl make && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
