@@ -440,6 +440,7 @@ mod tests {
             server: "x".into(),
             latency_ms: Some(10),
             note: None,
+            ns: vec![],
             dnssec: Some("BROKEN: DS present but no DNSKEY".into()),
             error: None,
         }];
@@ -459,6 +460,7 @@ mod tests {
             server: "a.gtld (1.2.3.4)".into(),
             latency_ms: Some(450),
             note: None,
+            ns: vec![],
             dnssec: None,
             error: None,
         }];

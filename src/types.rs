@@ -43,6 +43,8 @@ pub struct TraceHop {
     pub server: String,
     pub latency_ms: Option<u128>,
     pub note: Option<String>,
+    /// Full referral NS set: "name (ip)" when glue known, bare name otherwise.
+    pub ns: Vec<String>,
     pub dnssec: Option<String>,
     pub error: Option<String>,
 }

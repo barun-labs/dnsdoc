@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::IpAddr;
 
 use hickory_proto::rr::{RData, RecordType};
@@ -12,6 +13,17 @@ const ROOTS: &[(&str, &str)] = &[
     ("f.root-servers.net", "192.5.5.241"),
     ("k.root-servers.net", "193.0.14.129"),
 ];
+
+/// Pair each referral NS name with its glue IP when known.
+pub fn format_referral(ns_names: &[String], glue: &HashMap<String, IpAddr>) -> Vec<String> {
+    ns_names
+        .iter()
+        .map(|n| match glue.get(n) {
+            Some(ip) => format!("{n} ({ip})"),
+            None => n.clone(),
+        })
+        .collect()
+}
 
 /// Progressive zone cuts for a domain, root-first.
 /// "example.com" -> [".", "com.", "example.com."]
@@ -55,6 +67,7 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
             server: format!("{server_name} ({server_ip})"),
             latency_ms: None,
             note: None,
+            ns: vec![],
             dnssec: None,
             error: None,
         };
@@ -78,13 +91,20 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
                         hop.note = Some("LAME: no AA flag and no referral".into());
                     }
                 } else {
-                    // Resolve next-hop server IPs from glue (additional) or lookup.
-                    let mut next: Vec<(String, IpAddr)> = vec![];
+                    // Glue: pair every additional A record with its owner name.
+                    let mut glue: HashMap<String, IpAddr> = HashMap::new();
                     for r in resp.additionals() {
                         if let Ok(&RData::A(a)) = r.data().try_into() {
-                            next.push((r.name().to_string(), IpAddr::V4(a.0)));
+                            glue.insert(r.name().to_string(), IpAddr::V4(a.0));
                         }
                     }
+                    hop.ns = format_referral(&ns_names, &glue);
+
+                    // Resolve next-hop server IPs from glue (additional) or lookup.
+                    let mut next: Vec<(String, IpAddr)> = ns_names
+                        .iter()
+                        .filter_map(|n| glue.get(n).map(|ip| (n.clone(), *ip)))
+                        .collect();
                     if next.is_empty() {
                         // No glue: resolve first NS name via public resolver.
                         let seed: IpAddr = "8.8.8.8".parse().unwrap();
@@ -137,5 +157,14 @@ mod tests {
     #[test]
     fn next_labels_trailing_dot_ignored() {
         assert_eq!(next_labels("example.com."), vec![".", "com.", "example.com."]);
+    }
+
+    #[test]
+    fn format_referral_pairs_glue() {
+        let ns_names = vec!["ns01.x.com.".to_string(), "ns02.x.com.".to_string()];
+        let mut glue = std::collections::HashMap::new();
+        glue.insert("ns01.x.com.".to_string(), "64.96.1.1".parse::<std::net::IpAddr>().unwrap());
+        let out = format_referral(&ns_names, &glue);
+        assert_eq!(out, vec!["ns01.x.com. (64.96.1.1)".to_string(), "ns02.x.com.".to_string()]);
     }
 }

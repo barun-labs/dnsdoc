@@ -93,7 +93,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 fn draw_help(f: &mut Frame) {
     let area = f.area();
     let w = 46.min(area.width);
-    let h = 14.min(area.height);
+    let h = 16.min(area.height);
     let rect = Rect {
         x: area.width.saturating_sub(w) / 2,
         y: area.height.saturating_sub(h) / 2,
@@ -101,7 +101,7 @@ fn draw_help(f: &mut Frame) {
         height: h,
     };
     f.render_widget(Clear, rect);
-    let items: Vec<ListItem> = [
+    let mut items: Vec<ListItem> = [
         ("q", "quit"),
         ("Tab/1-5/←→", "tabs"),
         ("↑↓", "scroll"),
@@ -119,6 +119,11 @@ fn draw_help(f: &mut Frame) {
         ]))
     })
     .collect();
+    items.push(ListItem::new(Line::from("")));
+    items.push(ListItem::new(Line::from(Span::styled(
+        format!(" v{} · {}", env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_REPOSITORY")),
+        Style::default().fg(Color::DarkGray),
+    ))));
     f.render_widget(
         List::new(items).block(Block::default().borders(Borders::ALL).title(" Keys — Esc/?/q close ")),
         rect,
@@ -289,7 +294,12 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" dnsdoc — {} · [{}] ", app.domain, app.active_profile().name)),
+                .title(format!(
+                    " dnsdoc v{} — {} · [{}] ",
+                    env!("CARGO_PKG_VERSION"),
+                    app.domain,
+                    app.active_profile().name
+                )),
         )
         .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD));
     f.render_widget(tabs, area);
@@ -474,7 +484,7 @@ fn draw_trace(f: &mut Frame, app: &App, area: Rect) {
         app.trace
             .iter()
             .enumerate()
-            .map(|(i, h)| {
+            .flat_map(|(i, h)| {
                 let indent = if i == 0 {
                     String::new()
                 } else {
@@ -500,7 +510,20 @@ fn draw_trace(f: &mut Frame, app: &App, area: Rect) {
                 if let Some(e) = &h.error {
                     spans.push(Span::styled(format!("  ERROR: {e}"), Style::default().fg(Color::Red)));
                 }
-                ListItem::new(Line::from(spans))
+                // One dim line per referral NS, indented beneath the hop glyph.
+                let mut items = vec![ListItem::new(Line::from(spans))];
+                let child_indent = if i == 0 {
+                    String::new()
+                } else {
+                    format!("{}   ", "   ".repeat(i - 1))
+                };
+                for n in &h.ns {
+                    items.push(ListItem::new(Line::from(Span::styled(
+                        format!("{child_indent}   • {n}"),
+                        Style::default().fg(Color::DarkGray),
+                    ))));
+                }
+                items
             })
             .collect()
     };
