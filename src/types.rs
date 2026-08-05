@@ -85,6 +85,7 @@ pub enum Msg {
         rtype: String,
         answers: Vec<String>,
         ttl: Option<u32>,
+        latency_ms: u64,
     },
     Dnssec(Vec<CheckResult>),
     Mail(Vec<CheckResult>),

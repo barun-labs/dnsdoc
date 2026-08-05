@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -86,6 +86,8 @@ pub struct App {
     pub trace: Vec<TraceHop>,
     pub monitor_log: Vec<MonitorEvent>,
     pub monitor_snapshot: HashMap<String, (Vec<String>, Option<u32>, Instant)>,
+    /// Last 60 poll latencies per record type, for the sparkline.
+    pub monitor_latency: HashMap<String, VecDeque<u64>>,
     pub monitor_started: bool,
     pub dnssec: Vec<CheckResult>,
     pub mail: Vec<CheckResult>,
@@ -125,6 +127,7 @@ impl App {
             trace: vec![],
             monitor_log,
             monitor_snapshot: HashMap::new(),
+            monitor_latency: HashMap::new(),
             monitor_started: false,
             dnssec: vec![],
             mail: vec![],
@@ -364,8 +367,13 @@ impl App {
                 self.trace.push(hop);
             }
             Msg::Monitor(ev) => self.monitor_log.insert(0, ev),
-            Msg::MonitorSnapshot { rtype, answers, ttl } => {
-                self.monitor_snapshot.insert(rtype, (answers, ttl, Instant::now()));
+            Msg::MonitorSnapshot { rtype, answers, ttl, latency_ms } => {
+                self.monitor_snapshot.insert(rtype.clone(), (answers, ttl, Instant::now()));
+                let lat = self.monitor_latency.entry(rtype).or_default();
+                lat.push_back(latency_ms);
+                if lat.len() > 60 {
+                    lat.pop_front();
+                }
             }
             Msg::Dnssec(v) => {
                 self.dnssec = v;

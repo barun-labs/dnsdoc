@@ -53,6 +53,23 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Map poll latencies onto the 8 braille sparkline buckets (lowest → ▁, max → █).
+pub fn sparkline(vals: &[u64]) -> String {
+    if vals.is_empty() {
+        return String::new();
+    }
+    let glyphs: Vec<char> = "▁▂▃▄▅▆▇█".chars().collect();
+    let max = *vals.iter().max().unwrap();
+    let min = *vals.iter().min().unwrap();
+    let span = (max - min).max(1);
+    vals.iter()
+        .map(|v| {
+            let idx = (((v - min) * 7) / span) as usize;
+            glyphs[idx.min(7)]
+        })
+        .collect()
+}
+
 pub async fn run(
     domain: String,
     rtypes: Vec<RecordType>,
@@ -75,6 +92,7 @@ pub async fn run(
                     rtype: key.clone(),
                     answers: out.answers.clone(),
                     ttl: out.ttl,
+                    latency_ms: out.latency_ms as u64,
                 })
                 .await;
 
@@ -100,6 +118,21 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparkline_maps_buckets() {
+        let s = sparkline(&[0, 100]);
+        assert_eq!(s.chars().count(), 2);
+        // lowest maps to first glyph, highest to last
+        let chars: Vec<char> = "▁▂▃▄▅▆▇█".chars().collect();
+        assert_eq!(s.chars().next().unwrap(), chars[0]);
+        assert_eq!(s.chars().last().unwrap(), chars[7]);
+    }
+
+    #[test]
+    fn sparkline_empty_is_empty() {
+        assert_eq!(sparkline(&[]), "");
+    }
 
     #[test]
     fn diff_ignores_order() {

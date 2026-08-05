@@ -9,6 +9,7 @@ use ratatui::Frame;
 
 use crate::app::{App, Tab};
 use crate::checks::analysis::{analyze_propagation, synthesize};
+use crate::checks::monitor::sparkline;
 use crate::checks::propagation::consensus;
 use crate::types::{CheckResult, Diagnosis, Severity};
 
@@ -584,7 +585,9 @@ fn draw_sweep(f: &mut Frame, app: &App, area: Rect) {
         f,
         area,
         items,
-        Block::default().borders(Borders::ALL).title(" Sweep "),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Sweep — {} hits ", app.sweep_rows.len())),
         app.scroll,
     );
 }
@@ -670,10 +673,23 @@ fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
                 }
                 None => String::new(),
             };
+            // Latency sparkline: last 60 polls, latest ms value appended.
+            let latencies: Vec<u64> = app
+                .monitor_latency
+                .get(rt)
+                .map(|q| q.iter().copied().collect())
+                .unwrap_or_default();
+            let spark = if latencies.is_empty() {
+                String::new()
+            } else {
+                let latest = *latencies.last().unwrap();
+                format!("  {} {latest}ms", sparkline(&latencies))
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{rt:<6}"), Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(if answers.is_empty() { "(empty)".into() } else { answers.join(", ") }),
                 Span::styled(countdown, Style::default().fg(Color::DarkGray)),
+                Span::styled(spark, Style::default().fg(Color::Cyan)),
             ]))
         })
         .collect();
