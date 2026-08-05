@@ -38,8 +38,8 @@ dnsdoc example.com --profile privacy   # start on a resolver profile
 
 ## Tabs
 
-- **Propagation** — queries the domain's chosen record type against ~16
-  public resolvers plus any you configure, compares each against the
+- **Propagation** — queries the domain's chosen record type against 9
+  reliable public resolvers plus any you configure, compares each against the
   authoritative answer, and shows a consensus verdict. Rows stream in live
   with a progress counter; a gauge shows the agree ratio and latencies are
   color-banded. Dead resolvers show their error inline and never block the
@@ -91,9 +91,9 @@ Custom resolvers are added on top of the built-in public list.
 
 ### Resolver profiles
 
-Three presets ship built in: **all** (16 public resolvers + your custom
-ones), **global** (Google/Cloudflare/Quad9/OpenDNS), **privacy**
-(Quad9/AdGuard/CleanBrowsing). Define your own — e.g. ISP resolver sets —
+Three presets ship built in: **all** (9 reliable public resolvers + your
+custom ones), **global** (Google/Cloudflare/Quad9/OpenDNS), **privacy**
+(Quad9/AdGuard). Define your own — e.g. ISP resolver sets —
 and switch with `p`/`P` in the TUI or `--profile NAME` on the CLI:
 
 ```toml

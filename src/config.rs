@@ -55,13 +55,6 @@ pub fn builtin_resolvers() -> Vec<Resolver> {
         ("OpenDNS", "208.67.222.222"),
         ("OpenDNS-2", "208.67.220.220"),
         ("AdGuard", "94.140.14.14"),
-        ("DNS.SB", "185.222.222.222"),
-        ("Comodo", "8.26.56.26"),
-        ("CleanBrowsing", "185.228.168.9"),
-        ("Level3", "4.2.2.1"),
-        ("Verisign", "64.6.64.6"),
-        ("Yandex", "77.88.8.8"),
-        ("ControlD", "76.76.2.0"),
     ];
     list.iter()
         .map(|(name, ip)| Resolver {
@@ -109,7 +102,7 @@ fn parse(toml_str: &str) -> Config {
         },
         Profile {
             name: "privacy".into(),
-            resolvers: preset(&["Quad9", "Quad9-2", "AdGuard", "CleanBrowsing"]),
+            resolvers: preset(&["Quad9", "Quad9-2", "AdGuard"]),
         },
     ];
     for p in raw.profile {
@@ -168,7 +161,7 @@ mod tests {
         let names: Vec<&str> = cfg.profiles.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["all", "global", "privacy"]);
         assert_eq!(cfg.profiles[1].resolvers.len(), 8);
-        assert_eq!(cfg.profiles[2].resolvers.len(), 4);
+        assert_eq!(cfg.profiles[2].resolvers.len(), 3);
     }
 
     #[test]
