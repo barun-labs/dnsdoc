@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use hickory_proto::rr::RecordType;
@@ -70,7 +71,7 @@ pub struct App {
     pub audit: Vec<CheckResult>,
     pub trace: Vec<TraceHop>,
     pub monitor_log: Vec<MonitorEvent>,
-    pub monitor_snapshot: HashMap<String, (Vec<String>, Option<u32>)>,
+    pub monitor_snapshot: HashMap<String, (Vec<String>, Option<u32>, Instant)>,
     pub monitor_started: bool,
     pub status: String,
     pub loading: bool,
@@ -338,7 +339,7 @@ impl App {
             }
             Msg::Monitor(ev) => self.monitor_log.insert(0, ev),
             Msg::MonitorSnapshot { rtype, answers, ttl } => {
-                self.monitor_snapshot.insert(rtype, (answers, ttl));
+                self.monitor_snapshot.insert(rtype, (answers, ttl, Instant::now()));
             }
             Msg::Error(e) => {
                 self.status = format!("error: {e}");

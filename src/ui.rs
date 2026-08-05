@@ -2,8 +2,8 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Table, Tabs,
+    Block, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Table, Tabs,
 };
 use ratatui::Frame;
 
@@ -16,6 +16,29 @@ const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '�
 
 pub fn spinner_frame(tick: u64) -> char {
     SPINNER[(tick % 10) as usize]
+}
+
+fn latency_color(ms: u128) -> Color {
+    if ms < 50 {
+        Color::Green
+    } else if ms < 200 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
+}
+
+pub fn relative_age(ts: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(t) = chrono::DateTime::parse_from_rfc3339(ts) else {
+        return ts.to_string();
+    };
+    let secs = (now - t.with_timezone(&chrono::Utc)).num_seconds().max(0);
+    match secs {
+        0..=59 => format!("{secs}s ago"),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86399 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86400),
+    }
 }
 
 /// Skip `scroll` items and attach a scrollbar when content overflows.
@@ -112,11 +135,27 @@ fn draw_domain_input(f: &mut Frame, app: &App) {
         height: 3,
     };
     f.render_widget(Clear, rect);
+    let cursor = app.input_cursor.min(app.input_buf.len());
+    let before = &app.input_buf[..cursor];
+    let rest = &app.input_buf[cursor..];
+    let mut spans = vec![Span::styled(before.to_string(), Style::default().add_modifier(Modifier::BOLD))];
+    if rest.is_empty() {
+        spans.push(Span::styled("█", Style::default().fg(Color::Cyan)));
+    } else {
+        spans.push(Span::styled(
+            rest[..rest.chars().next().unwrap().len_utf8()].to_string(),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            rest[rest.chars().next().unwrap().len_utf8()..].to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    }
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(app.input_buf.clone(), Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled("█", Style::default().fg(Color::Cyan)),
-        ]))
+        Paragraph::new(Line::from(spans))
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -200,11 +239,50 @@ fn diagnosis_items(d: &Diagnosis) -> Vec<ListItem<'static>> {
     items
 }
 
+/// Problem-count badges for tab titles: `✗n` red / `!n` yellow, nothing when clean.
+fn tab_badge(tab: Tab, app: &App) -> Vec<Span<'static>> {
+    let mut spans = vec![];
+    match tab {
+        Tab::Propagation => {
+            let n = app.prop_rows.iter().filter(|r| r.matches_auth == Some(false)).count();
+            if n > 0 {
+                spans.push(Span::styled(format!("✗{n} "), Style::default().fg(Color::Red)));
+            }
+        }
+        Tab::Audit => {
+            let e = app.audit.iter().filter(|c| c.severity == Severity::Err).count();
+            let w = app.audit.iter().filter(|c| c.severity == Severity::Warn).count();
+            if e > 0 {
+                spans.push(Span::styled(format!("✗{e} "), Style::default().fg(Color::Red)));
+            }
+            if w > 0 {
+                spans.push(Span::styled(format!("!{w} "), Style::default().fg(Color::Yellow)));
+            }
+        }
+        Tab::Trace => {
+            let broken = app.trace.iter().any(|h| {
+                h.error.is_some()
+                    || h.note.as_deref().is_some_and(|n| n.contains("LAME"))
+                    || h.dnssec.as_deref().is_some_and(|d| d.contains("BROKEN"))
+            });
+            if broken {
+                spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
+            }
+        }
+        _ => {}
+    }
+    spans
+}
+
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = Tab::ALL
         .iter()
         .enumerate()
-        .map(|(i, t)| Line::from(format!(" {}·{} ", i + 1, t.title())))
+        .map(|(i, t)| {
+            let mut spans = vec![Span::raw(format!(" {}·{} ", i + 1, t.title()))];
+            spans.extend(tab_badge(*t, app));
+            Line::from(spans)
+        })
         .collect();
     let tabs = Tabs::new(titles)
         .select(app.tab.index())
@@ -232,7 +310,7 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
     let banner_h = if rows_present { (diag.evidence.len() as u16 + 4).min(10) } else { 3 };
     let split = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(banner_h), Constraint::Min(3)])
+        .constraints([Constraint::Length(banner_h), Constraint::Length(1), Constraint::Min(3)])
         .split(area);
 
     if rows_present {
@@ -260,7 +338,25 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
         );
     }
 
+    // Consensus gauge: agree/answered ratio, green full, yellow partial, red none.
     let (agree, answered) = consensus(&app.prop_rows);
+    if rows_present {
+        let ratio = agree as f64 / answered.max(1) as f64;
+        let color = if agree == answered && answered > 0 {
+            Color::Green
+        } else if agree == 0 {
+            Color::Red
+        } else {
+            Color::Yellow
+        };
+        f.render_widget(
+            Gauge::default()
+                .ratio(ratio)
+                .gauge_style(Style::default().fg(color))
+                .label(format!("{agree}/{answered} agree")),
+            split[1],
+        );
+    }
     let auth = if app.auth_answer.is_empty() {
         "unknown".to_string()
     } else {
@@ -298,7 +394,11 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
                 Cell::from(format!("{} ({})", r.resolver, r.ip)),
                 Cell::from(answer).style(style),
                 Cell::from(r.ttl.map(|t| t.to_string()).unwrap_or_default()),
-                Cell::from(r.latency_ms.map(|l| l.to_string()).unwrap_or_default()),
+                Cell::from(r.latency_ms.map(|l| l.to_string()).unwrap_or_default())
+                    .style(match r.latency_ms {
+                        Some(l) => Style::default().fg(latency_color(l)),
+                        None => Style::default(),
+                    }),
                 Cell::from(Line::from(mark)),
             ])
         })
@@ -306,7 +406,7 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
 
     // same skip + scrollbar math as scrolled_list, applied to the row vec
     let total = rows.len();
-    let visible = split[1].height.saturating_sub(2) as usize; // borders
+    let visible = split[2].height.saturating_sub(2) as usize; // borders
     let max_off = total.saturating_sub(visible);
     let off = (app.scroll as usize).min(max_off);
     let rows: Vec<Row> = rows.into_iter().skip(off).collect();
@@ -323,12 +423,12 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
     )
     .header(header)
     .block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(table, split[1]);
+    f.render_widget(table, split[2]);
     if total > visible {
         let mut state = ScrollbarState::new(max_off).position(off);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),
-            split[1],
+            split[2],
             &mut state,
         );
     }
@@ -375,13 +475,17 @@ fn draw_trace(f: &mut Frame, app: &App, area: Rect) {
             .iter()
             .enumerate()
             .map(|(i, h)| {
-                let indent = "  ".repeat(i);
+                let indent = if i == 0 {
+                    String::new()
+                } else {
+                    format!("{}└─ ", "   ".repeat(i - 1))
+                };
                 let mut spans = vec![
                     Span::raw(format!("{indent}{} ", h.zone)),
                     Span::styled(format!("@{}", h.server), Style::default().fg(Color::Cyan)),
                 ];
                 if let Some(ms) = h.latency_ms {
-                    spans.push(Span::styled(format!(" {ms}ms"), Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::styled(format!(" {ms}ms"), Style::default().fg(latency_color(ms))));
                 }
                 if let Some(n) = &h.note {
                     let color = if n.contains("LAME") { Color::Red } else { Color::White };
@@ -419,14 +523,18 @@ fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
     let mut snap: Vec<ListItem> = app
         .monitor_snapshot
         .iter()
-        .map(|(rt, (answers, ttl))| {
+        .map(|(rt, (answers, ttl, received))| {
+            let countdown = match ttl {
+                Some(t) => {
+                    let left = (*t as u64).saturating_sub(received.elapsed().as_secs());
+                    format!("  ttl {t}s (~{left}s left)")
+                }
+                None => String::new(),
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{rt:<6}"), Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(if answers.is_empty() { "(empty)".into() } else { answers.join(", ") }),
-                Span::styled(
-                    ttl.map(|t| format!("  ttl {t}s")).unwrap_or_default(),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(countdown, Style::default().fg(Color::DarkGray)),
             ]))
         })
         .collect();
@@ -445,15 +553,16 @@ fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
         app.monitor_log
             .iter()
             .map(|e| {
+                let age = relative_age(&e.timestamp, chrono::Utc::now());
                 if e.flap {
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("{} ", e.timestamp), Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{age} "), Style::default().fg(Color::DarkGray)),
                         Span::styled(format!("{} {} → {} ↻ round-robin?", e.rtype, e.old.join(","), e.new.join(",")),
                             Style::default().fg(Color::DarkGray)),
                     ]))
                 } else {
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("{} ", e.timestamp), Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{age} "), Style::default().fg(Color::DarkGray)),
                         Span::styled(format!("{} ", e.rtype), Style::default().fg(Color::Cyan)),
                         Span::styled(e.old.join(","), Style::default().fg(Color::Red)),
                         Span::raw(" → "),
@@ -540,5 +649,23 @@ mod tests {
         let b = spinner_frame(1);
         assert_ne!(a, b);
         assert_eq!(spinner_frame(0), spinner_frame(10)); // 10 frames
+    }
+
+    #[test]
+    fn latency_color_bands() {
+        assert_eq!(latency_color(10), Color::Green);
+        assert_eq!(latency_color(120), Color::Yellow);
+        assert_eq!(latency_color(700), Color::Red);
+    }
+
+    #[test]
+    fn relative_age_formats() {
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap();
+        assert_eq!(relative_age("2026-08-05T11:59:30+00:00", now), "30s ago");
+        assert_eq!(relative_age("2026-08-05T11:57:00+00:00", now), "3m ago");
+        assert_eq!(relative_age("2026-08-05T09:00:00+00:00", now), "3h ago");
+        assert_eq!(relative_age("2026-08-01T12:00:00+00:00", now), "4d ago");
+        assert_eq!(relative_age("garbage", now), "garbage"); // fall back to raw
     }
 }
