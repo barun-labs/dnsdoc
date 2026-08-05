@@ -1,13 +1,34 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Tabs};
+use ratatui::widgets::{
+    Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Table, Tabs,
+};
 use ratatui::Frame;
 
 use crate::app::{App, Tab};
 use crate::checks::analysis::{analyze_propagation, synthesize};
 use crate::checks::propagation::consensus;
 use crate::types::{Diagnosis, Severity};
+
+/// Skip `scroll` items and attach a scrollbar when content overflows.
+fn scrolled_list(f: &mut Frame, area: Rect, items: Vec<ListItem<'static>>, block: Block<'static>, scroll: u16) {
+    let total = items.len();
+    let visible = area.height.saturating_sub(2) as usize; // borders
+    let max_off = total.saturating_sub(visible);
+    let off = (scroll as usize).min(max_off);
+    let shown: Vec<ListItem> = items.into_iter().skip(off).collect();
+    f.render_widget(List::new(shown).block(block), area);
+    if total > visible {
+        let mut state = ScrollbarState::new(max_off).position(off);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area,
+            &mut state,
+        );
+    }
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -34,6 +55,45 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.input_mode {
         draw_domain_input(f, app);
     }
+    if app.help_open {
+        draw_help(f);
+    }
+}
+
+/// Centered popup listing every key binding; key column cyan.
+fn draw_help(f: &mut Frame) {
+    let area = f.area();
+    let w = 46.min(area.width);
+    let h = 14.min(area.height);
+    let rect = Rect {
+        x: area.width.saturating_sub(w) / 2,
+        y: area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let items: Vec<ListItem> = [
+        ("q", "quit"),
+        ("Tab/1-5/←→", "tabs"),
+        ("↑↓", "scroll"),
+        ("r", "rerun"),
+        ("t", "record type"),
+        ("d", "domain"),
+        ("p/P", "profile"),
+        ("?", "help"),
+    ]
+    .iter()
+    .map(|(k, v)| {
+        ListItem::new(Line::from(vec![
+            Span::styled(format!(" {k:<10} "), Style::default().fg(Color::Cyan)),
+            Span::raw(*v),
+        ]))
+    })
+    .collect();
+    f.render_widget(
+        List::new(items).block(Block::default().borders(Borders::ALL).title(" Keys — Esc/?/q close ")),
+        rect,
+    );
 }
 
 fn draw_domain_input(f: &mut Frame, app: &App) {
@@ -221,6 +281,13 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    // same skip + scrollbar math as scrolled_list, applied to the row vec
+    let total = rows.len();
+    let visible = split[1].height.saturating_sub(2) as usize; // borders
+    let max_off = total.saturating_sub(visible);
+    let off = (app.scroll as usize).min(max_off);
+    let rows: Vec<Row> = rows.into_iter().skip(off).collect();
+
     let table = Table::new(
         rows,
         [
@@ -234,6 +301,14 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
     .header(header)
     .block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(table, split[1]);
+    if total > visible {
+        let mut state = ScrollbarState::new(max_off).position(off);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            split[1],
+            &mut state,
+        );
+    }
 }
 
 fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
@@ -252,9 +327,13 @@ fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect()
     };
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Audit "));
-    f.render_widget(list, area);
+    scrolled_list(
+        f,
+        area,
+        items,
+        Block::default().borders(Borders::ALL).title(" Audit "),
+        app.scroll,
+    );
 }
 
 fn draw_trace(f: &mut Frame, app: &App, area: Rect) {
@@ -290,9 +369,13 @@ fn draw_trace(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect()
     };
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Delegation trace "));
-    f.render_widget(list, area);
+    scrolled_list(
+        f,
+        area,
+        items,
+        Block::default().borders(Borders::ALL).title(" Delegation trace "),
+        app.scroll,
+    );
 }
 
 fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
@@ -349,9 +432,12 @@ fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect()
     };
-    f.render_widget(
-        List::new(log).block(Block::default().borders(Borders::ALL).title(" Change log ")),
+    scrolled_list(
+        f,
         cols[1],
+        log,
+        Block::default().borders(Borders::ALL).title(" Change log "),
+        app.scroll,
     );
 }
 
@@ -390,9 +476,12 @@ fn draw_analysis(f: &mut Frame, app: &App, area: Rect) {
         items.extend(diagnosis_items(d));
     }
     let title = format!(" Analysis — {} probable finding(s), most severe first ", diagnoses.len());
-    f.render_widget(
-        List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
+    scrolled_list(
+        f,
         area,
+        items,
+        Block::default().borders(Borders::ALL).title(title),
+        app.scroll,
     );
 }
 
@@ -402,7 +491,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else if !app.status.is_empty() {
         app.status.clone()
     } else {
-        "q quit · Tab/1-5 switch · r rerun · t record-type · d domain · p/P profile".to_string()
+        "q quit · Tab/1-5 switch · r rerun · t record-type · d domain · p/P profile · ? help".to_string()
     };
     f.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::Gray)),

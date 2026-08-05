@@ -74,6 +74,11 @@ pub struct App {
     pub monitor_started: bool,
     pub status: String,
     pub loading: bool,
+    /// Rows to skip in the current tab body (Up/Down keys).
+    pub scroll: u16,
+    pub help_open: bool,
+    /// Byte index into `input_buf` for the domain-input cursor.
+    pub input_cursor: usize,
 }
 
 impl App {
@@ -98,6 +103,9 @@ impl App {
             monitor_started: false,
             status: String::new(),
             loading: false,
+            scroll: 0,
+            help_open: false,
+            input_cursor: 0,
         }
     }
 
@@ -126,6 +134,14 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        if self.help_open {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => self.help_open = false,
+                _ => {}
+            }
+            return Action::None;
+        }
+
         if self.picker_open {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -156,6 +172,7 @@ impl App {
                     self.input_buf.clear();
                     if !val.is_empty() {
                         self.domain = val;
+                        self.scroll = 0;
                         return Action::DomainChanged;
                     }
                     return Action::None;
@@ -166,11 +183,41 @@ impl App {
                     return Action::None;
                 }
                 KeyCode::Backspace => {
-                    self.input_buf.pop();
+                    // cursor clamped to len: index into buf may trail a cleared buffer
+                    if self.input_cursor > 0 && self.input_cursor <= self.input_buf.len() {
+                        self.input_cursor -= 1;
+                        self.input_buf.remove(self.input_cursor);
+                    }
+                    return Action::None;
+                }
+                KeyCode::Delete => {
+                    if self.input_cursor < self.input_buf.len() {
+                        self.input_buf.remove(self.input_cursor);
+                    }
+                    return Action::None;
+                }
+                KeyCode::Left => {
+                    self.input_cursor = self.input_cursor.saturating_sub(1);
+                    return Action::None;
+                }
+                KeyCode::Right => {
+                    if self.input_cursor < self.input_buf.len() {
+                        self.input_cursor += 1;
+                    }
+                    return Action::None;
+                }
+                KeyCode::Home => {
+                    self.input_cursor = 0;
+                    return Action::None;
+                }
+                KeyCode::End => {
+                    self.input_cursor = self.input_buf.len();
                     return Action::None;
                 }
                 KeyCode::Char(c) => {
-                    self.input_buf.push(c);
+                    let idx = self.input_cursor.min(self.input_buf.len());
+                    self.input_buf.insert(idx, c);
+                    self.input_cursor = idx + 1;
                     return Action::None;
                 }
                 _ => return Action::None,
@@ -182,24 +229,40 @@ impl App {
             KeyCode::Char('d') => {
                 self.input_mode = true;
                 self.input_buf = self.domain.clone();
+                self.input_cursor = self.input_buf.len();
                 Action::None
             }
             KeyCode::Tab | KeyCode::Right => {
+                self.scroll = 0;
                 let next = (self.tab.index() + 1) % Tab::ALL.len();
                 self.tab = Tab::ALL[next];
                 self.tab_action()
             }
             KeyCode::BackTab | KeyCode::Left => {
+                self.scroll = 0;
                 let prev = (self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len();
                 self.tab = Tab::ALL[prev];
                 self.tab_action()
             }
             KeyCode::Char(c @ '1'..='5') => {
+                self.scroll = 0;
                 let idx = c as usize - '1' as usize;
                 self.tab = Tab::ALL[idx];
                 self.tab_action()
             }
             KeyCode::Char('r') => self.tab_action(),
+            KeyCode::Char('?') => {
+                self.help_open = true;
+                Action::None
+            }
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                self.scroll = self.scroll.saturating_add(1);
+                Action::None
+            }
             KeyCode::Char('p') => {
                 self.profile_idx = (self.profile_idx + 1) % self.profiles.len();
                 Action::ProfileChanged
@@ -398,6 +461,56 @@ mod tests {
         assert!(a.set_profile("PRIVACY"));
         assert_eq!(a.profile_idx, 2);
         assert!(!a.set_profile("nope"));
+    }
+
+    #[test]
+    fn arrows_scroll_and_tab_switch_resets() {
+        let mut a = app();
+        a.handle_key(key(KeyCode::Down));
+        a.handle_key(key(KeyCode::Down));
+        assert_eq!(a.scroll, 2);
+        a.handle_key(key(KeyCode::Up));
+        assert_eq!(a.scroll, 1);
+        a.handle_key(key(KeyCode::Tab));
+        assert_eq!(a.scroll, 0);
+    }
+
+    #[test]
+    fn scroll_saturates_at_zero() {
+        let mut a = app();
+        a.handle_key(key(KeyCode::Up));
+        assert_eq!(a.scroll, 0);
+    }
+
+    #[test]
+    fn question_mark_toggles_help() {
+        let mut a = app();
+        a.handle_key(key(KeyCode::Char('?')));
+        assert!(a.help_open);
+        // keys other than close keys are swallowed while help is open
+        let act = a.handle_key(key(KeyCode::Char('r')));
+        assert_eq!(act, Action::None);
+        assert!(a.help_open);
+        a.handle_key(key(KeyCode::Esc));
+        assert!(!a.help_open);
+    }
+
+    #[test]
+    fn input_cursor_moves_and_inserts() {
+        let mut a = app();
+        a.handle_key(key(KeyCode::Char('d'))); // buf = "example.com", cursor at end
+        assert_eq!(a.input_cursor, a.input_buf.len());
+        a.handle_key(key(KeyCode::Home));
+        assert_eq!(a.input_cursor, 0);
+        a.handle_key(key(KeyCode::Char('x')));
+        assert!(a.input_buf.starts_with('x'));
+        assert_eq!(a.input_cursor, 1);
+        a.handle_key(key(KeyCode::End));
+        a.handle_key(key(KeyCode::Backspace));
+        a.handle_key(key(KeyCode::Left));
+        let before = a.input_cursor;
+        a.handle_key(key(KeyCode::Right));
+        assert_eq!(a.input_cursor, before + 1);
     }
 
     #[test]
