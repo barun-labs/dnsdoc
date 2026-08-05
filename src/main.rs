@@ -55,7 +55,7 @@ async fn run(
     if app.domain.is_empty() {
         app.input_mode = true;
     } else {
-        spawn_tab(&app, &cfg, Tab::Propagation, tx.clone());
+        spawn_all(&app, &cfg, tx.clone());
         app.loading = true;
     }
 
@@ -88,12 +88,8 @@ async fn run(
                     }
                     Action::RunAnalysis => {
                         if !app.domain.is_empty() {
-                            // Gather fresh evidence from all three checks; the
-                            // Analysis view synthesizes as results arrive.
                             app.trace.clear();
-                            spawn_tab(&app, &cfg, Tab::Propagation, tx.clone());
-                            spawn_tab(&app, &cfg, Tab::Audit, tx.clone());
-                            spawn_tab(&app, &cfg, Tab::Trace, tx.clone());
+                            spawn_all(&app, &cfg, tx.clone());
                         }
                     }
                     Action::DomainChanged => {
@@ -106,7 +102,7 @@ async fn run(
                                 app.trace.clear();
                                 app.monitor_started = false;
                                 app.loading = true;
-                                spawn_tab(&app, &cfg, app.tab, tx.clone());
+                                spawn_all(&app, &cfg, tx.clone());
                             }
                             Err(e) => app.status = format!("invalid domain: {e}"),
                         }
@@ -136,6 +132,13 @@ fn spawn_tab(app: &App, cfg: &Config, tab: Tab, tx: mpsc::Sender<Msg>) {
         // Analysis fans out to the other checks via Action::RunAnalysis.
         Tab::Analysis => {}
     }
+}
+
+/// Fan out propagation, audit and trace so every tab (and Analysis) has data.
+fn spawn_all(app: &App, cfg: &Config, tx: mpsc::Sender<Msg>) {
+    spawn_tab(app, cfg, Tab::Propagation, tx.clone());
+    spawn_tab(app, cfg, Tab::Audit, tx.clone());
+    spawn_tab(app, cfg, Tab::Trace, tx);
 }
 
 fn spawn_monitor(app: &App, cfg: &Config, tx: mpsc::Sender<Msg>) {
