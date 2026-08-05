@@ -1,8 +1,9 @@
-# dns-tester
+# dnsdoc
 
 Terminal UI to diagnose DNS problems for a domain from the outside — no
-zone-file access needed. Four views: propagation, config audit,
-delegation/DNSSEC trace, and live monitoring.
+zone-file access needed. Five views: propagation, config audit,
+delegation/DNSSEC trace, live monitoring, and a reasoned analysis that backs
+every verdict with the evidence it rests on.
 
 ## Install
 
@@ -15,8 +16,8 @@ cargo run -- example.com
 ## Usage
 
 ```bash
-dns-tester example.com   # open dashboard for a domain
-dns-tester               # start with an empty input box (press d to type)
+dnsdoc example.com   # open dashboard for a domain
+dnsdoc               # start with an empty input box (press d to type)
 ```
 
 ### Keys
@@ -58,7 +59,7 @@ broken" without the reason.
 
 ## Config
 
-Optional TOML at `~/.config/dns-tester/config.toml`:
+Optional TOML at `~/.config/dnsdoc/config.toml`:
 
 ```toml
 poll_interval_secs = 30
@@ -74,7 +75,7 @@ ip = "192.168.1.1"
 
 Custom resolvers are added on top of the built-in public list.
 
-Monitor history is stored at `~/.local/share/dns-tester/history.jsonl`
+Monitor history is stored at `~/.local/share/dnsdoc/history.jsonl`
 (one JSON change event per line).
 
 ## Development

@@ -10,11 +10,11 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
-use dns_tester::app::{Action, App, Tab};
-use dns_tester::checks;
-use dns_tester::config::Config;
-use dns_tester::types::{self, validate_domain, Msg};
-use dns_tester::ui;
+use dnsdoc::app::{Action, App, Tab};
+use dnsdoc::checks;
+use dnsdoc::config::Config;
+use dnsdoc::types::{self, validate_domain, Msg};
+use dnsdoc::ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {

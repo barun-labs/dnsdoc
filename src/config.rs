@@ -59,7 +59,7 @@ pub fn builtin_resolvers() -> Vec<Resolver> {
 fn default_history_path() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("dns-tester")
+        .join("dnsdoc")
         .join("history.jsonl")
 }
 
@@ -83,7 +83,7 @@ impl Config {
     pub fn load() -> Config {
         let path = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("dns-tester")
+            .join("dnsdoc")
             .join("config.toml");
         let toml_str = std::fs::read_to_string(path).unwrap_or_default();
         parse(&toml_str)

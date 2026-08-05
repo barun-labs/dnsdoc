@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
-use dns_tester::checks::{audit, propagation, trace};
-use dns_tester::config::builtin_resolvers;
-use dns_tester::types::Msg;
+use dnsdoc::checks::{audit, propagation, trace};
+use dnsdoc::config::builtin_resolvers;
+use dnsdoc::types::Msg;
 use hickory_proto::rr::RecordType;
 use tokio::sync::mpsc;
 
