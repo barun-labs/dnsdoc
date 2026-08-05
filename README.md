@@ -28,31 +28,42 @@ dnsdoc example.com --profile privacy   # start on a resolver profile
 | `q`        | quit                                    |
 | `Tab` / `1`–`5` | switch tab                         |
 | `←` / `→`  | previous / next tab                     |
+| `↑` / `↓`  | scroll the current tab                  |
 | `r`        | re-run the current tab                  |
 | `t`        | cycle record type (Propagation)         |
-| `d`        | change domain (Enter commit, Esc cancel)|
+| `d`        | change domain (Enter commit, Esc cancel; `←`/`→`/Home/End move the cursor) |
 | `p`        | cycle resolver profile                  |
 | `P`        | profile picker (↑/↓, Enter, Esc)        |
+| `?`        | help overlay                            |
 
 ## Tabs
 
 - **Propagation** — queries the domain's chosen record type against ~16
   public resolvers plus any you configure, compares each against the
-  authoritative answer, and shows a consensus verdict. Dead resolvers show
-  their error inline and never block the rest.
+  authoritative answer, and shows a consensus verdict. Rows stream in live
+  with a progress counter; a gauge shows the agree ratio and latencies are
+  color-banded. Dead resolvers show their error inline and never block the
+  rest. Stale answers get a wall-clock ETA for when caches clear.
 - **Audit** — external health checks with OK / WARN / ERR severity: NS
-  delegation consistency, SOA serial agreement, lame-server detection, SPF
-  (present, single record, ≤10 lookups), DMARC policy, DKIM selector probe,
-  TTL sanity, apex CNAME, open AXFR zone transfer, wildcard records.
+  delegation consistency, NS redundancy (count + /24 spread), SOA serial
+  agreement, SOA timer sanity, lame-server detection, CAA, MX target sanity
+  (resolvable, no CNAME, no IP literal, null MX), SPF (present, single
+  record, ≤10 lookups), DMARC policy, DKIM selector probe, TTL sanity, apex
+  CNAME, open AXFR zone transfer, wildcard records.
 - **Trace** — iterative resolution from the root servers down to the
   authoritative NS, one hop per zone cut, with latency and DNSSEC status
   (`signed`, `unsigned zone`, or `BROKEN` where the chain fails).
 - **Monitor** — polls the domain on an interval (default 60s), diffs each
-  poll against the last, and logs changes. The change log persists to disk
+  poll against the last, and logs changes with relative timestamps and a TTL
+  countdown per record. Answer sets seen before are tagged `↻ round-robin?`
+  and dimmed instead of logged as changes. The change log persists to disk
   and reloads on the next start.
 - **Analysis** — runs all three checks and synthesizes ranked probable
   causes, each stated as a plain-language call with the evidence it rests on
-  (a `based on:` line per fact). Example: *"Still propagating — 4 of 16
+  (a `based on:` line per fact). Correlations include delegation drift, zone
+  version lag, broken DNSSEC cross-referenced against resolvers failing right
+  now, slow authoritative paths, and resolver latency outliers. Tab titles
+  carry `✗`/`!` badges so problems are visible without visiting each tab. Example: *"Still propagating — 4 of 16
   resolvers not yet updated · based on: 4 resolvers still serve [1.2.3.4],
   stale answers carry TTL up to 3600s (~60m) before caches clear."* The same
   evidence banner also sits atop the Propagation tab.
