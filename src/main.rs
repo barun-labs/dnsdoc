@@ -18,14 +18,18 @@ use dnsdoc::ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let arg = std::env::args().nth(1);
+    // Args: [domain] [--profile NAME]
+    let mut domain = String::new();
+    let mut profile_arg: Option<String> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--profile" || a == "-p" {
+            profile_arg = args.next();
+        } else if let Ok(d) = validate_domain(&a) {
+            domain = d;
+        }
+    }
     let cfg = Config::load();
-
-    // Resolve initial domain (validated) or start in input mode.
-    let domain = arg
-        .as_deref()
-        .and_then(|a| validate_domain(a).ok())
-        .unwrap_or_default();
 
     let history = checks::monitor::load_history(&cfg.history_path);
 
@@ -35,7 +39,7 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run(&mut terminal, cfg, domain, history).await;
+    let res = run(&mut terminal, cfg, domain, history, profile_arg).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -48,9 +52,15 @@ async fn run(
     cfg: Config,
     domain: String,
     history: Vec<types::MonitorEvent>,
+    profile_arg: Option<String>,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<Msg>(256);
-    let mut app = App::new(domain, history);
+    let mut app = App::new(domain, history, cfg.profiles.clone());
+    if let Some(name) = profile_arg {
+        if !app.set_profile(&name) {
+            app.status = format!("unknown profile: {name} (P to list)");
+        }
+    }
 
     if app.domain.is_empty() {
         app.input_mode = true;
@@ -92,6 +102,14 @@ async fn run(
                             spawn_all(&app, &cfg, tx.clone());
                         }
                     }
+                    Action::ProfileChanged => {
+                        if !app.domain.is_empty() {
+                            app.prop_rows.clear();
+                            app.loading = true;
+                            spawn_tab(&app, &cfg, Tab::Propagation, tx.clone());
+                        }
+                        app.status = format!("profile: {}", app.active_profile().name);
+                    }
                     Action::DomainChanged => {
                         match validate_domain(&app.domain) {
                             Ok(d) => {
@@ -118,7 +136,7 @@ fn spawn_tab(app: &App, cfg: &Config, tab: Tab, tx: mpsc::Sender<Msg>) {
     let domain = app.domain.clone();
     match tab {
         Tab::Propagation => {
-            let resolvers = cfg.resolvers.clone();
+            let resolvers = app.active_resolvers();
             let rtype = app.rtype;
             tokio::spawn(checks::propagation::run(domain, rtype, resolvers, tx));
         }

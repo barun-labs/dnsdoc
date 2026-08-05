@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Tabs};
+use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Tabs};
 use ratatui::Frame;
 
 use crate::app::{App, Tab};
@@ -28,6 +28,45 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Analysis => draw_analysis(f, app, chunks[1]),
     }
     draw_status(f, app, chunks[2]);
+    if app.picker_open {
+        draw_profile_picker(f, app);
+    }
+}
+
+fn draw_profile_picker(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let w = 40.min(area.width);
+    let h = (app.profiles.len() as u16 + 2).min(area.height);
+    let rect = Rect {
+        x: area.width.saturating_sub(w) / 2,
+        y: area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let items: Vec<ListItem> = app
+        .profiles
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let marker = if i == app.profile_idx { "●" } else { " " };
+            let line = format!("{marker} {} ({} resolvers)", p.name, p.resolvers.len());
+            let style = if i == app.picker_idx {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(line).style(style)
+        })
+        .collect();
+    f.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Resolver profile — Enter select · Esc close "),
+        ),
+        rect,
+    );
 }
 
 fn sev_color(sev: Severity) -> Color {
@@ -68,7 +107,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" dns-tester — {} ", app.domain)),
+                .title(format!(" dnsdoc — {} · [{}] ", app.domain, app.active_profile().name)),
         )
         .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD));
     f.render_widget(tabs, area);
@@ -315,7 +354,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else if !app.status.is_empty() {
         app.status.clone()
     } else {
-        "q quit · Tab/1-5 switch · r rerun · t record-type · d domain".to_string()
+        "q quit · Tab/1-5 switch · r rerun · t record-type · d domain · p/P profile".to_string()
     };
     f.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::Gray)),

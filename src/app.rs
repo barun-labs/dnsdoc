@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crossterm::event::{KeyCode, KeyEvent};
 use hickory_proto::rr::RecordType;
 
+use crate::config::{Profile, Resolver};
 use crate::types::{CheckResult, Msg, MonitorEvent, PropagationRow, TraceHop};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +41,8 @@ pub enum Action {
     StartMonitor,
     RunAnalysis,
     DomainChanged,
+    /// Resolver profile switched — propagation data is stale.
+    ProfileChanged,
 }
 
 pub const RTYPES: [RecordType; 6] = [
@@ -55,6 +58,10 @@ pub struct App {
     pub domain: String,
     pub input_mode: bool,
     pub input_buf: String,
+    pub profiles: Vec<Profile>,
+    pub profile_idx: usize,
+    pub picker_open: bool,
+    pub picker_idx: usize,
     pub tab: Tab,
     pub rtype: RecordType,
     pub prop_rows: Vec<PropagationRow>,
@@ -69,11 +76,15 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(domain: String, monitor_log: Vec<MonitorEvent>) -> Self {
+    pub fn new(domain: String, monitor_log: Vec<MonitorEvent>, profiles: Vec<Profile>) -> Self {
         App {
             domain,
             input_mode: false,
             input_buf: String::new(),
+            profiles,
+            profile_idx: 0,
+            picker_open: false,
+            picker_idx: 0,
             tab: Tab::Propagation,
             rtype: RecordType::A,
             prop_rows: vec![],
@@ -88,12 +99,53 @@ impl App {
         }
     }
 
+    pub fn active_profile(&self) -> &Profile {
+        &self.profiles[self.profile_idx.min(self.profiles.len().saturating_sub(1))]
+    }
+
+    pub fn active_resolvers(&self) -> Vec<Resolver> {
+        self.active_profile().resolvers.clone()
+    }
+
+    /// Set active profile by name (case-insensitive). Returns false if unknown.
+    pub fn set_profile(&mut self, name: &str) -> bool {
+        match self.profiles.iter().position(|p| p.name.eq_ignore_ascii_case(name)) {
+            Some(i) => {
+                self.profile_idx = i;
+                true
+            }
+            None => false,
+        }
+    }
+
     fn cycle_rtype(&mut self) {
         let i = RTYPES.iter().position(|t| *t == self.rtype).unwrap_or(0);
         self.rtype = RTYPES[(i + 1) % RTYPES.len()];
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        if self.picker_open {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.picker_idx =
+                        (self.picker_idx + self.profiles.len() - 1) % self.profiles.len();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.picker_idx = (self.picker_idx + 1) % self.profiles.len();
+                }
+                KeyCode::Enter => {
+                    self.picker_open = false;
+                    if self.picker_idx != self.profile_idx {
+                        self.profile_idx = self.picker_idx;
+                        return Action::ProfileChanged;
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => self.picker_open = false,
+                _ => {}
+            }
+            return Action::None;
+        }
+
         if self.input_mode {
             match key.code {
                 KeyCode::Enter => {
@@ -146,6 +198,15 @@ impl App {
                 self.tab_action()
             }
             KeyCode::Char('r') => self.tab_action(),
+            KeyCode::Char('p') => {
+                self.profile_idx = (self.profile_idx + 1) % self.profiles.len();
+                Action::ProfileChanged
+            }
+            KeyCode::Char('P') => {
+                self.picker_open = true;
+                self.picker_idx = self.profile_idx;
+                Action::None
+            }
             KeyCode::Char('t') => {
                 self.cycle_rtype();
                 if self.tab == Tab::Propagation {
@@ -219,8 +280,15 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn profiles() -> Vec<Profile> {
+        ["all", "global", "privacy"]
+            .iter()
+            .map(|n| Profile { name: n.to_string(), resolvers: vec![] })
+            .collect()
+    }
+
     fn app() -> App {
-        App::new("example.com".into(), vec![])
+        App::new("example.com".into(), vec![], profiles())
     }
 
     #[test]
@@ -285,6 +353,48 @@ mod tests {
         a.handle_key(key(KeyCode::Char('1')));
         let act = a.handle_key(key(KeyCode::Char('4')));
         assert_eq!(act, Action::None);
+    }
+
+    #[test]
+    fn p_cycles_profile() {
+        let mut a = app();
+        let act = a.handle_key(key(KeyCode::Char('p')));
+        assert_eq!(a.profile_idx, 1);
+        assert_eq!(act, Action::ProfileChanged);
+        a.handle_key(key(KeyCode::Char('p')));
+        a.handle_key(key(KeyCode::Char('p')));
+        assert_eq!(a.profile_idx, 0);
+    }
+
+    #[test]
+    fn picker_selects_profile() {
+        let mut a = app();
+        a.handle_key(key(KeyCode::Char('P')));
+        assert!(a.picker_open);
+        a.handle_key(key(KeyCode::Down));
+        let act = a.handle_key(key(KeyCode::Enter));
+        assert!(!a.picker_open);
+        assert_eq!(a.profile_idx, 1);
+        assert_eq!(act, Action::ProfileChanged);
+    }
+
+    #[test]
+    fn picker_esc_keeps_profile() {
+        let mut a = app();
+        a.handle_key(key(KeyCode::Char('P')));
+        a.handle_key(key(KeyCode::Down));
+        let act = a.handle_key(key(KeyCode::Esc));
+        assert!(!a.picker_open);
+        assert_eq!(a.profile_idx, 0);
+        assert_eq!(act, Action::None);
+    }
+
+    #[test]
+    fn set_profile_by_name() {
+        let mut a = app();
+        assert!(a.set_profile("PRIVACY"));
+        assert_eq!(a.profile_idx, 2);
+        assert!(!a.set_profile("nope"));
     }
 
     #[test]

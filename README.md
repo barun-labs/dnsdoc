@@ -16,8 +16,9 @@ cargo run -- example.com
 ## Usage
 
 ```bash
-dnsdoc example.com   # open dashboard for a domain
-dnsdoc               # start with an empty input box (press d to type)
+dnsdoc example.com                # open dashboard for a domain
+dnsdoc                            # start with an empty input box (press d to type)
+dnsdoc example.com --profile privacy   # start on a resolver profile
 ```
 
 ### Keys
@@ -30,6 +31,8 @@ dnsdoc               # start with an empty input box (press d to type)
 | `r`        | re-run the current tab                  |
 | `t`        | cycle record type (Propagation)         |
 | `d`        | change domain (Enter commit, Esc cancel)|
+| `p`        | cycle resolver profile                  |
+| `P`        | profile picker (↑/↓, Enter, Esc)        |
 
 ## Tabs
 
@@ -74,6 +77,29 @@ ip = "192.168.1.1"
 ```
 
 Custom resolvers are added on top of the built-in public list.
+
+### Resolver profiles
+
+Three presets ship built in: **all** (16 public resolvers + your custom
+ones), **global** (Google/Cloudflare/Quad9/OpenDNS), **privacy**
+(Quad9/AdGuard/CleanBrowsing). Define your own — e.g. ISP resolver sets —
+and switch with `p`/`P` in the TUI or `--profile NAME` on the CLI:
+
+```toml
+[[profile]]
+name = "time-my"
+resolvers = [
+  { name = "TIME-1", ip = "210.19.6.81" },
+  { name = "TIME-2", ip = "210.19.6.82" },
+]
+
+[[profile]]
+name = "unifi-my"
+resolvers = [
+  { name = "Unifi-1", ip = "202.188.0.132" },
+  { name = "Unifi-2", ip = "202.188.18.188" },
+]
+```
 
 Monitor history is stored at `~/.local/share/dnsdoc/history.jsonl`
 (one JSON change event per line).
