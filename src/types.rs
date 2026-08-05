@@ -59,6 +59,7 @@ pub enum Msg {
         answers: Vec<String>,
         ttl: Option<u32>,
     },
+    #[allow(dead_code)] // reserved for surfacing task errors to the status line
     Error(String),
 }
 
