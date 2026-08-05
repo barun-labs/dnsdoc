@@ -6,6 +6,7 @@ use hickory_client::client::Client;
 use hickory_proto::rr::{Name, RData, RecordType};
 use hickory_proto::xfer::DnsHandle;
 use hickory_proto::runtime::TokioRuntimeProvider;
+use hickory_proto::tcp::TcpClientStream;
 use hickory_proto::udp::UdpClientStream;
 use hickory_proto::xfer::DnsResponse;
 
@@ -37,6 +38,7 @@ pub fn rdata_to_string(rdata: &RData) -> String {
             soa.rname(),
             soa.serial()
         ),
+        RData::PTR(p) => p.to_string(),
         other => other.to_string(),
     }
 }
@@ -92,6 +94,98 @@ pub async fn raw_query_opts(
     .await
     .map_err(|_| anyhow!("timeout"))??;
     Ok((resp, start.elapsed().as_millis()))
+}
+
+/// Same as `raw_query_opts` but over TCP, for servers that truncate or
+/// refuse UDP or where payload size matters.
+pub async fn raw_query_tcp(
+    server: IpAddr,
+    domain: &str,
+    rtype: RecordType,
+    rd: bool,
+) -> Result<(DnsResponse, u128)> {
+    use futures::StreamExt;
+    use hickory_proto::op::{Message, MessageType, OpCode, Query};
+    let name = Name::from_ascii(format!("{domain}."))?;
+    let start = Instant::now();
+    let resp = tokio::time::timeout(QUERY_TIMEOUT, async {
+        let addr = SocketAddr::new(server, 53);
+        let (stream, sender) =
+            TcpClientStream::new(addr, None, Some(QUERY_TIMEOUT), TokioRuntimeProvider::new());
+        let (client, bg) = Client::new(stream, sender, None).await?;
+        tokio::spawn(bg);
+        let mut msg = Message::new();
+        msg.add_query(Query::query(name, rtype))
+            .set_id(rand::random())
+            .set_message_type(MessageType::Query)
+            .set_op_code(OpCode::Query)
+            .set_recursion_desired(rd);
+        client
+            .send(msg)
+            .next()
+            .await
+            .ok_or_else(|| anyhow!("no response"))?
+            .map_err(|e| anyhow!(e))
+    })
+    .await
+    .map_err(|_| anyhow!("timeout"))??;
+    Ok((resp, start.elapsed().as_millis()))
+}
+
+/// UDP query carrying an EDNS OPT record with a settable DNSSEC-OK bit.
+/// `do_bit = true` asks the server to include RRSIGs in answers.
+pub async fn raw_query_edns(
+    server: IpAddr,
+    domain: &str,
+    rtype: RecordType,
+    rd: bool,
+    do_bit: bool,
+) -> Result<(DnsResponse, u128)> {
+    use futures::StreamExt;
+    use hickory_proto::op::{Message, MessageType, OpCode, Query};
+    let name = Name::from_ascii(format!("{domain}."))?;
+    let start = Instant::now();
+    let resp = tokio::time::timeout(QUERY_TIMEOUT, async {
+        let client = connect(server).await?;
+        let mut msg = Message::new();
+        msg.add_query(Query::query(name, rtype))
+            .set_id(rand::random())
+            .set_message_type(MessageType::Query)
+            .set_op_code(OpCode::Query)
+            .set_recursion_desired(rd);
+        {
+            let edns = msg.extensions_mut().get_or_insert_with(Default::default);
+            edns.set_max_payload(1232);
+            edns.set_dnssec_ok(do_bit);
+        }
+        client
+            .send(msg)
+            .next()
+            .await
+            .ok_or_else(|| anyhow!("no response"))?
+            .map_err(|e| anyhow!(e))
+    })
+    .await
+    .map_err(|_| anyhow!("timeout"))??;
+    Ok((resp, start.elapsed().as_millis()))
+}
+
+/// Reverse-lookup name for an IP: in-addr.arpa for v4, nibble form for v6.
+pub fn reverse_name(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            format!("{}.{}.{}.{}.in-addr.arpa", o[3], o[2], o[1], o[0])
+        }
+        IpAddr::V6(v6) => {
+            let mut s = String::new();
+            for octet in v6.octets().iter().rev() {
+                s.push_str(&format!("{:x}.{:x}.", octet & 0xf, octet >> 4));
+            }
+            s.push_str("ip6.arpa");
+            s
+        }
+    }
 }
 
 pub async fn query(server: IpAddr, domain: &str, rtype: RecordType) -> QueryOutcome {
@@ -222,5 +316,20 @@ mod tests {
     fn renders_txt_record_joined() {
         let r = RData::TXT(TXT::new(vec!["v=spf1 ".to_string(), "-all".to_string()]));
         assert_eq!(rdata_to_string(&r), "v=spf1 -all");
+    }
+
+    #[test]
+    fn reverse_name_v4() {
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert_eq!(reverse_name(ip), "4.3.2.1.in-addr.arpa");
+    }
+
+    #[test]
+    fn reverse_name_v6() {
+        let ip: IpAddr = "2001:db8::1".parse().unwrap();
+        let n = reverse_name(ip);
+        assert!(n.ends_with("ip6.arpa"));
+        // 32 nibbles + ip6 + arpa = 34 labels
+        assert_eq!(n.matches('.').count(), 33);
     }
 }

@@ -74,6 +74,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Propagation => draw_propagation(f, app, chunks[1]),
         Tab::Audit => draw_audit(f, app, chunks[1]),
         Tab::Trace => draw_trace(f, app, chunks[1]),
+        Tab::Dnssec => draw_dnssec(f, app, chunks[1]),
+        Tab::Mail => draw_mail(f, app, chunks[1]),
+        Tab::Sweep => draw_sweep(f, app, chunks[1]),
         Tab::Monitor => draw_monitor(f, app, chunks[1]),
         Tab::Analysis => draw_analysis(f, app, chunks[1]),
     }
@@ -103,7 +106,7 @@ fn draw_help(f: &mut Frame) {
     f.render_widget(Clear, rect);
     let mut items: Vec<ListItem> = [
         ("q", "quit"),
-        ("Tab/1-5/←→", "tabs"),
+        ("Tab/1-8/←→", "tabs"),
         ("↑↓", "scroll"),
         ("r", "rerun"),
         ("t", "record type"),
@@ -476,6 +479,99 @@ fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// Placeholder until the DNSSEC task fills in real checks.
+fn draw_dnssec(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = if app.dnssec.is_empty() {
+        vec![ListItem::new(if app.loading {
+            format!("{} running dnssec checks…", spinner_frame(app.tick))
+        } else {
+            "press 'r' to run dnssec checks".to_string()
+        })]
+    } else {
+        app.dnssec
+            .iter()
+            .map(|c| {
+                let (tag, style) = sev_style(c.severity);
+                ListItem::new(Line::from(vec![
+                    Span::styled(tag, style.add_modifier(Modifier::BOLD)),
+                    Span::raw(format!("  {:<16} ", c.name)),
+                    Span::raw(c.detail.clone()),
+                ]))
+            })
+            .collect()
+    };
+    scrolled_list(
+        f,
+        area,
+        items,
+        Block::default().borders(Borders::ALL).title(" DNSSEC "),
+        app.scroll,
+    );
+}
+
+/// Placeholder until the Mail task fills in real checks.
+fn draw_mail(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = if app.mail.is_empty() {
+        vec![ListItem::new(if app.loading {
+            format!("{} running mail checks…", spinner_frame(app.tick))
+        } else {
+            "press 'r' to run mail checks".to_string()
+        })]
+    } else {
+        app.mail
+            .iter()
+            .map(|c| {
+                let (tag, style) = sev_style(c.severity);
+                ListItem::new(Line::from(vec![
+                    Span::styled(tag, style.add_modifier(Modifier::BOLD)),
+                    Span::raw(format!("  {:<16} ", c.name)),
+                    Span::raw(c.detail.clone()),
+                ]))
+            })
+            .collect()
+    };
+    scrolled_list(
+        f,
+        area,
+        items,
+        Block::default().borders(Borders::ALL).title(" Mail "),
+        app.scroll,
+    );
+}
+
+/// Placeholder until the Sweep task fills in real probing.
+fn draw_sweep(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = if app.sweep_rows.is_empty() {
+        vec![ListItem::new(if app.loading {
+            format!("{} sweeping…", spinner_frame(app.tick))
+        } else {
+            "press 'r' to sweep common records".to_string()
+        })]
+    } else {
+        app.sweep_rows
+            .iter()
+            .map(|r| {
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!("{} ", r.name)),
+                    Span::styled(format!("{}  ", r.rtype), Style::default().fg(Color::Cyan)),
+                    Span::raw(if r.answers.is_empty() {
+                        "(empty)".into()
+                    } else {
+                        r.answers.join(", ")
+                    }),
+                ]))
+            })
+            .collect()
+    };
+    scrolled_list(
+        f,
+        area,
+        items,
+        Block::default().borders(Borders::ALL).title(" Sweep "),
+        app.scroll,
+    );
+}
+
 fn draw_trace(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if app.trace.is_empty() {
         vec![ListItem::new(if app.loading {
@@ -657,7 +753,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else if !app.status.is_empty() {
         app.status.clone()
     } else {
-        "q quit · Tab/1-5 switch · r rerun · t record-type · d domain · p/P profile · ? help".to_string()
+        "q quit · Tab/1-8 switch · r rerun · t record-type · d domain · p/P profile · ? help".to_string()
     };
     f.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::Gray)),

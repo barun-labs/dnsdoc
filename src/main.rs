@@ -149,6 +149,16 @@ fn spawn_tab(app: &App, cfg: &Config, tab: Tab, tx: mpsc::Sender<Msg>) {
         Tab::Trace => {
             tokio::spawn(checks::trace::run(domain, tx));
         }
+        Tab::Dnssec => {
+            let resolvers = app.active_resolvers();
+            tokio::spawn(checks::dnssec::run(domain, resolvers, tx));
+        }
+        Tab::Mail => {
+            tokio::spawn(checks::mail::run(domain, tx));
+        }
+        Tab::Sweep => {
+            tokio::spawn(checks::sweep::run(domain, tx));
+        }
         Tab::Monitor => spawn_monitor(app, cfg, tx),
         // Analysis fans out to the other checks via Action::RunAnalysis.
         Tab::Analysis => {}

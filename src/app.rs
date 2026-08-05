@@ -5,25 +5,39 @@ use crossterm::event::{KeyCode, KeyEvent};
 use hickory_proto::rr::RecordType;
 
 use crate::config::{Profile, Resolver};
-use crate::types::{CheckResult, Msg, MonitorEvent, PropagationRow, TraceHop};
+use crate::types::{CheckResult, Msg, MonitorEvent, PropagationRow, SweepRow, TraceHop};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Propagation,
     Audit,
     Trace,
+    Dnssec,
+    Mail,
+    Sweep,
     Monitor,
     Analysis,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] =
-        [Tab::Propagation, Tab::Audit, Tab::Trace, Tab::Monitor, Tab::Analysis];
+    pub const ALL: [Tab; 8] = [
+        Tab::Propagation,
+        Tab::Audit,
+        Tab::Trace,
+        Tab::Dnssec,
+        Tab::Mail,
+        Tab::Sweep,
+        Tab::Monitor,
+        Tab::Analysis,
+    ];
     pub fn title(&self) -> &'static str {
         match self {
             Tab::Propagation => "Propagation",
             Tab::Audit => "Audit",
             Tab::Trace => "Trace",
+            Tab::Dnssec => "DNSSEC",
+            Tab::Mail => "Mail",
+            Tab::Sweep => "Sweep",
             Tab::Monitor => "Monitor",
             Tab::Analysis => "Analysis",
         }
@@ -73,6 +87,12 @@ pub struct App {
     pub monitor_log: Vec<MonitorEvent>,
     pub monitor_snapshot: HashMap<String, (Vec<String>, Option<u32>, Instant)>,
     pub monitor_started: bool,
+    pub dnssec: Vec<CheckResult>,
+    pub mail: Vec<CheckResult>,
+    pub sweep_rows: Vec<SweepRow>,
+    pub reverse_open: bool,
+    pub reverse_buf: String,
+    pub reverse_result: Vec<String>,
     pub status: String,
     pub loading: bool,
     /// Resolver count of the in-flight propagation run (for the counter).
@@ -106,6 +126,12 @@ impl App {
             monitor_log,
             monitor_snapshot: HashMap::new(),
             monitor_started: false,
+            dnssec: vec![],
+            mail: vec![],
+            sweep_rows: vec![],
+            reverse_open: false,
+            reverse_buf: String::new(),
+            reverse_result: vec![],
             status: String::new(),
             loading: false,
             prop_expected: 0,
@@ -251,7 +277,7 @@ impl App {
                 self.tab = Tab::ALL[prev];
                 self.tab_action()
             }
-            KeyCode::Char(c @ '1'..='5') => {
+            KeyCode::Char(c @ '1'..='8') => {
                 self.scroll = 0;
                 let idx = c as usize - '1' as usize;
                 self.tab = Tab::ALL[idx];
@@ -341,6 +367,17 @@ impl App {
             Msg::MonitorSnapshot { rtype, answers, ttl } => {
                 self.monitor_snapshot.insert(rtype, (answers, ttl, Instant::now()));
             }
+            Msg::Dnssec(v) => {
+                self.dnssec = v;
+                self.loading = false;
+            }
+            Msg::Mail(v) => {
+                self.mail = v;
+                self.loading = false;
+            }
+            Msg::SweepStart => self.sweep_rows.clear(),
+            Msg::SweepRow(r) => self.sweep_rows.push(r),
+            Msg::Reverse(v) => self.reverse_result = v,
             Msg::Error(e) => {
                 self.status = format!("error: {e}");
                 self.loading = false;
@@ -424,12 +461,12 @@ mod tests {
     #[test]
     fn monitor_starts_once() {
         let mut a = app();
-        a.handle_key(key(KeyCode::Char('4')));
+        a.handle_key(key(KeyCode::Char('7')));
         assert_eq!(a.tab, Tab::Monitor);
         assert!(a.monitor_started);
         // second visit does not restart
         a.handle_key(key(KeyCode::Char('1')));
-        let act = a.handle_key(key(KeyCode::Char('4')));
+        let act = a.handle_key(key(KeyCode::Char('7')));
         assert_eq!(act, Action::None);
     }
 
@@ -523,6 +560,16 @@ mod tests {
         let before = a.input_cursor;
         a.handle_key(key(KeyCode::Right));
         assert_eq!(a.input_cursor, before + 1);
+    }
+
+    #[test]
+    fn eight_tabs_and_number_keys() {
+        assert_eq!(Tab::ALL.len(), 8);
+        let mut a = app();
+        a.handle_key(key(KeyCode::Char('8')));
+        assert_eq!(a.tab, Tab::Analysis);
+        a.handle_key(key(KeyCode::Char('4')));
+        assert_eq!(a.tab, Tab::Dnssec);
     }
 
     #[test]
