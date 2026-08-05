@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
+use chrono::TimeZone;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{RData, RecordType};
 use tokio::sync::mpsc;
@@ -215,6 +216,46 @@ pub fn check_soa_values(serial: u32, refresh: i32, retry: i32, expire: i32, mini
     }
 }
 
+/// Walk of a CNAME chain: `chain[0]` is the queried name's first CNAME
+/// target, each subsequent entry the next. `terminal_resolves` says whether
+/// the last target answered an A/AAAA query.
+pub fn check_cname_chain(chain: &[String], terminal_resolves: bool) -> CheckResult {
+    let mut seen = std::collections::HashSet::new();
+    for c in chain {
+        if !seen.insert(c.trim_end_matches('.').to_ascii_lowercase()) {
+            return err("CNAME chain", format!("loop detected at {c}"));
+        }
+    }
+    if chain.is_empty() {
+        return ok("CNAME chain", "no CNAME");
+    }
+    let rendered = chain.join(" → ");
+    if !terminal_resolves {
+        err("CNAME chain", format!("dangling — {rendered} resolves to nothing"))
+    } else if chain.len() > 8 {
+        warn("CNAME chain", format!("{} hops ({rendered}) — resolvers may give up", chain.len()))
+    } else {
+        ok("CNAME chain", format!("{} hop(s): {rendered}", chain.len()))
+    }
+}
+
+/// SOA serials in YYYYMMDDnn form encode the zone's last-touch date.
+pub fn decode_soa_date(serial: u32, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let s = serial.to_string();
+    if s.len() != 10 {
+        return None;
+    }
+    let y: i32 = s[0..4].parse().ok()?;
+    let m: u32 = s[4..6].parse().ok()?;
+    let d: u32 = s[6..8].parse().ok()?;
+    if !(1990..=2035).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let date = chrono::Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).single()?;
+    let days = (now - date).num_days();
+    Some(format!("date-encoded, zone last touched ~{days}d ago"))
+}
+
 // ---- async collectors (network) ----
 
 /// Serial from the first SOA record in a raw response, if any.
@@ -265,15 +306,76 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
         if let Ok((resp, _)) = dns::raw_query_opts(*ip, &domain, RecordType::SOA, false).await {
             if let Some(r) = resp.answers().first() {
                 if let Ok(&RData::SOA(ref soa)) = r.data().try_into() {
-                    results.push(check_soa_values(
+                    // F9: date-encoded serials (YYYYMMDDnn) carry last-touch info
+                    let mut soa_check = check_soa_values(
                         soa.serial(),
                         soa.refresh(),
                         soa.retry(),
                         soa.expire(),
                         soa.minimum(),
-                    ));
+                    );
+                    if let Some(note) = decode_soa_date(soa.serial(), chrono::Utc::now()) {
+                        soa_check.detail = format!("{}; {}", soa_check.detail, note);
+                    }
+                    results.push(soa_check);
                 }
             }
+        }
+    }
+
+    // F3: TCP transport + EDNS on the primary NS — same SOA, RD=0
+    if let Some((_, ip)) = ns_list.first() {
+        match dns::raw_query_tcp(*ip, &domain, RecordType::SOA, false).await {
+            Ok((resp, _)) => {
+                results.push(ok("TCP transport", format!("TCP/53 answers ({} records)", resp.answers().len())));
+            }
+            Err(_) => results.push(err(
+                "TCP transport",
+                "TCP/53 refused or filtered — large responses and AXFR will fail",
+            )),
+        }
+        match dns::raw_query_edns(*ip, &domain, RecordType::SOA, false, false).await {
+            Ok((resp, _)) => match resp.extensions() {
+                Some(e) => results.push(ok("EDNS", format!("supported (advertised buffer {})", e.max_payload()))),
+                None => results.push(warn("EDNS", "no EDNS/OPT in response — old server, large answers truncate")),
+            },
+            Err(_) => results.push(warn("EDNS", "EDNS query failed")),
+        }
+    }
+
+    // F4: glue consistency — parent referral glue vs child-zone A for in-bailiwick NS
+    let mut glue: Vec<(String, String)> = vec![];
+    if let Ok((resp, _)) = dns::raw_query(seed, &domain, RecordType::NS).await {
+        for r in resp.additionals() {
+            if r.record_type() == RecordType::A {
+                if let Ok(&RData::A(ref a)) = r.data().try_into() {
+                    glue.push((r.name().to_string(), a.to_string()));
+                }
+            }
+        }
+    }
+    if glue.is_empty() {
+        results.push(ok("Glue", "no glue in referral additional section — nothing to compare"));
+    } else {
+        let dom = domain.trim_end_matches('.').to_ascii_lowercase();
+        let mut mismatches = vec![];
+        let mut compared = 0;
+        for (ns, ip) in &ns_list {
+            let n = ns.trim_end_matches('.').to_ascii_lowercase();
+            if n != dom && !n.ends_with(&format!(".{dom}")) {
+                continue; // out-of-bailiwick — skip
+            }
+            if let Some((_, g)) = glue.iter().find(|(gn, _)| gn.trim_end_matches('.') == n.as_str()) {
+                compared += 1;
+                if *g != ip.to_string() {
+                    mismatches.push(format!("{ns}: glue {g} vs zone {ip}"));
+                }
+            }
+        }
+        if mismatches.is_empty() {
+            results.push(ok("Glue", format!("{compared} in-bailiwick NS match parent glue")));
+        } else {
+            results.push(err("Glue", mismatches.join("; ")));
         }
     }
 
@@ -401,6 +503,43 @@ pub async fn run(domain: String, tx: mpsc::Sender<Msg>) {
         results.push(ok("Wildcard", "no wildcard A record"));
     } else {
         results.push(warn("Wildcard", format!("wildcard resolves to {:?}", wc.answers)));
+    }
+
+    // F5: CNAME chains from the apex and www, capped at 12 hops
+    for label in [domain.clone(), format!("www.{domain}")] {
+        let mut chain = vec![];
+        let mut current = label.clone();
+        for _ in 0..12 {
+            let cname = dns::query(seed, &current, RecordType::CNAME).await;
+            let Some(target) = cname.answers.first() else { break };
+            chain.push(target.clone());
+            current = target.trim_end_matches('.').to_string();
+        }
+        let terminal_resolves = !chain.is_empty()
+            && (!dns::query(seed, &current, RecordType::A).await.answers.is_empty()
+                || !dns::query(seed, &current, RecordType::AAAA).await.answers.is_empty());
+        let mut r = check_cname_chain(&chain, terminal_resolves);
+        if label != domain {
+            r.name = "CNAME chain www".into();
+        }
+        results.push(r);
+    }
+
+    // F10: HTTPS/SVCB at apex + www, TLSA (DANE) at _443._tcp
+    for label in [domain.clone(), format!("www.{domain}")] {
+        let name = if label == domain { "HTTPS" } else { "HTTPS www" };
+        let h = dns::query(seed, &label, RecordType::HTTPS).await;
+        if h.answers.is_empty() {
+            results.push(ok(name, "none"));
+        } else {
+            results.push(ok(name, format!("present: {:?}", h.answers)));
+        }
+    }
+    let tlsa = dns::query(seed, &format!("_443._tcp.{domain}"), RecordType::TLSA).await;
+    if tlsa.answers.is_empty() {
+        results.push(ok("TLSA", "no DANE record"));
+    } else {
+        results.push(ok("TLSA", format!("present: {:?}", tlsa.answers)));
     }
 
     let _ = tx.send(Msg::Audit(results)).await;
@@ -588,5 +727,44 @@ mod tests {
         // retry >= refresh and tiny expire
         let r = check_soa_values(1, 7200, 14400, 3600, 3600);
         assert_eq!(r.severity, Severity::Warn);
+    }
+
+    #[test]
+    fn cname_chain_loop_errors() {
+        let r = check_cname_chain(&s(&["a.", "b.", "a."]), false);
+        assert_eq!(r.severity, Severity::Err);
+        assert!(r.detail.to_lowercase().contains("loop"));
+    }
+
+    #[test]
+    fn cname_chain_dangling_errors() {
+        let r = check_cname_chain(&s(&["a.", "b."]), false);
+        assert_eq!(r.severity, Severity::Err);
+    }
+
+    #[test]
+    fn cname_chain_ok() {
+        let r = check_cname_chain(&s(&["a.", "b."]), true);
+        assert_eq!(r.severity, Severity::Ok);
+        assert!(r.detail.contains("2 hop") || r.detail.contains("→"));
+    }
+
+    #[test]
+    fn cname_chain_too_long_warns() {
+        let long: Vec<String> = (0..10).map(|i| format!("h{i}.")).collect();
+        assert_eq!(check_cname_chain(&long, true).severity, Severity::Warn);
+    }
+
+    #[test]
+    fn soa_date_decoded() {
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2026, 8, 5, 0, 0, 0).unwrap();
+        let s = decode_soa_date(2026080101, now).unwrap();
+        assert!(s.contains("4d") || s.contains("day"));
+    }
+
+    #[test]
+    fn soa_date_non_date_serial_none() {
+        assert!(decode_soa_date(12345, chrono::Utc::now()).is_none());
     }
 }
