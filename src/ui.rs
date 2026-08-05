@@ -10,7 +10,7 @@ use ratatui::Frame;
 use crate::app::{App, Tab};
 use crate::checks::analysis::{analyze_propagation, synthesize};
 use crate::checks::propagation::consensus;
-use crate::types::{Diagnosis, Severity};
+use crate::types::{CheckResult, Diagnosis, Severity};
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -479,7 +479,8 @@ fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Placeholder until the DNSSEC task fills in real checks.
+/// DNSSEC checks grouped under RRSIG expiry / validation matrix / chain detail
+/// sub-headers, ordered by the checks' name prefixes.
 fn draw_dnssec(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if app.dnssec.is_empty() {
         vec![ListItem::new(if app.loading {
@@ -488,17 +489,34 @@ fn draw_dnssec(f: &mut Frame, app: &App, area: Rect) {
             "press 'r' to run dnssec checks".to_string()
         })]
     } else {
-        app.dnssec
-            .iter()
-            .map(|c| {
+        let groups: [(&str, fn(&CheckResult) -> bool); 3] = [
+            ("RRSIG expiry", |c| c.name.starts_with("RRSIG")),
+            (
+                "Validation matrix",
+                |c| c.name == "DNSSEC validation" || c.name.starts_with("validate"),
+            ),
+            ("Chain detail", |c| c.name.starts_with("chain")),
+        ];
+        let mut items = Vec::new();
+        for (header, pred) in groups {
+            let selected: Vec<&CheckResult> = app.dnssec.iter().filter(|c| pred(c)).collect();
+            if selected.is_empty() {
+                continue;
+            }
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("— {header} —"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ))));
+            for c in selected {
                 let (tag, style) = sev_style(c.severity);
-                ListItem::new(Line::from(vec![
+                items.push(ListItem::new(Line::from(vec![
                     Span::styled(tag, style.add_modifier(Modifier::BOLD)),
                     Span::raw(format!("  {:<16} ", c.name)),
                     Span::raw(c.detail.clone()),
-                ]))
-            })
-            .collect()
+                ])));
+            }
+        }
+        items
     };
     scrolled_list(
         f,
