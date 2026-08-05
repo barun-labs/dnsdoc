@@ -91,13 +91,63 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.help_open {
         draw_help(f);
     }
+    if app.reverse_open || !app.reverse_result.is_empty() {
+        draw_reverse(f, app);
+    }
+}
+
+/// Reverse-lookup popup: input box while open, result list once populated.
+/// Shown when `reverse_open` OR when a result exists (small results panel).
+fn draw_reverse(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let w = 64.min(area.width);
+    let results: Vec<ListItem> = app
+        .reverse_result
+        .iter()
+        .map(|l| ListItem::new(l.clone()))
+        .collect();
+    let n = (results.len() as u16).min(12);
+    let total = (if app.reverse_open { 3 + 1 + n } else { n }).min(area.height).max(1);
+    let rect = Rect {
+        x: area.width.saturating_sub(w) / 2,
+        y: area.height.saturating_sub(total) / 2,
+        width: w,
+        height: total,
+    };
+    f.render_widget(Clear, rect);
+    if app.reverse_open {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .split(rect);
+        f.render_widget(
+            Paragraph::new(app.reverse_buf.clone())
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Cyan))
+                        .title(" Reverse — IP + Enter look up · Esc close "),
+                ),
+            split[0],
+        );
+        f.render_widget(
+            List::new(results).block(Block::default().borders(Borders::ALL)),
+            split[1],
+        );
+    } else {
+        f.render_widget(
+            List::new(results)
+                .block(Block::default().borders(Borders::ALL).title(" Reverse — v to look up another ")),
+            rect,
+        );
+    }
 }
 
 /// Centered popup listing every key binding; key column cyan.
 fn draw_help(f: &mut Frame) {
     let area = f.area();
     let w = 46.min(area.width);
-    let h = 16.min(area.height);
+    let h = 18.min(area.height);
     let rect = Rect {
         x: area.width.saturating_sub(w) / 2,
         y: area.height.saturating_sub(h) / 2,
@@ -113,6 +163,8 @@ fn draw_help(f: &mut Frame) {
         ("t", "record type"),
         ("d", "domain"),
         ("p/P", "profile"),
+        ("e", "export report"),
+        ("v", "reverse lookup"),
         ("?", "help"),
     ]
     .iter()
@@ -786,7 +838,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else if !app.status.is_empty() {
         app.status.clone()
     } else {
-        "q quit · Tab/1-8 switch · r rerun · t record-type · d domain · p/P profile · ? help".to_string()
+        "q quit · Tab/1-8 switch · r rerun · t record-type · d domain · p/P profile · e export · v reverse · ? help".to_string()
     };
     f.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::Gray)),

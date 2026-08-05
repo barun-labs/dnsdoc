@@ -58,6 +58,10 @@ pub enum Action {
     DomainChanged,
     /// Resolver profile switched — propagation data is stale.
     ProfileChanged,
+    /// Export the full report as markdown + JSON into the cwd.
+    Export,
+    /// Reverse-lookup the typed IP (PTR + forward confirm).
+    ReverseLookup(String),
 }
 
 pub const RTYPES: [RecordType; 6] = [
@@ -170,6 +174,28 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        // First priority: the reverse-lookup popup swallows everything, so
+        // typing an IP never trips a global keybind.
+        if self.reverse_open {
+            match key.code {
+                KeyCode::Esc => self.reverse_open = false,
+                KeyCode::Enter => {
+                    let ip = self.reverse_buf.trim().to_string();
+                    self.reverse_open = false;
+                    self.reverse_buf.clear();
+                    if !ip.is_empty() {
+                        return Action::ReverseLookup(ip);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.reverse_buf.pop();
+                }
+                KeyCode::Char(c) => self.reverse_buf.push(c),
+                _ => {}
+            }
+            return Action::None;
+        }
+
         if self.help_open {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => self.help_open = false,
@@ -315,6 +341,12 @@ impl App {
                 } else {
                     Action::None
                 }
+            }
+            KeyCode::Char('e') => Action::Export,
+            KeyCode::Char('v') => {
+                self.reverse_open = true;
+                self.reverse_buf.clear();
+                Action::None
             }
             _ => Action::None,
         }
@@ -568,6 +600,37 @@ mod tests {
         let before = a.input_cursor;
         a.handle_key(key(KeyCode::Right));
         assert_eq!(a.input_cursor, before + 1);
+    }
+
+    #[test]
+    fn e_returns_export_action() {
+        assert_eq!(app().handle_key(key(KeyCode::Char('e'))), Action::Export);
+    }
+
+    #[test]
+    fn v_opens_reverse_popup_and_enter_looks_up() {
+        let mut a = app();
+        assert_eq!(a.handle_key(key(KeyCode::Char('v'))), Action::None);
+        assert!(a.reverse_open);
+        for c in "1.1.1.1".chars() {
+            a.handle_key(key(KeyCode::Char(c)));
+        }
+        let act = a.handle_key(key(KeyCode::Enter));
+        assert_eq!(act, Action::ReverseLookup("1.1.1.1".into()));
+        assert!(!a.reverse_open);
+        assert!(a.reverse_buf.is_empty());
+    }
+
+    #[test]
+    fn reverse_popup_swallows_global_keys() {
+        let mut a = app();
+        a.handle_key(key(KeyCode::Char('v')));
+        // q must not quit while typing an IP
+        assert_eq!(a.handle_key(key(KeyCode::Char('q'))), Action::None);
+        assert!(a.reverse_open);
+        a.handle_key(key(KeyCode::Esc));
+        assert!(!a.reverse_open);
+        assert_eq!(a.handle_key(key(KeyCode::Char('q'))), Action::Quit);
     }
 
     #[test]

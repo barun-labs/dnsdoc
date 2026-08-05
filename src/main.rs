@@ -13,6 +13,8 @@ use tokio::sync::mpsc;
 use dnsdoc::app::{Action, App, Tab};
 use dnsdoc::checks;
 use dnsdoc::config::Config;
+use dnsdoc::dns;
+use dnsdoc::report;
 use dnsdoc::types::{self, validate_domain, Msg};
 use dnsdoc::ui;
 
@@ -111,6 +113,26 @@ async fn run(
                         }
                         app.status = format!("profile: {}", app.active_profile().name);
                     }
+                    Action::Export => {
+                        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                        let md_path = format!("dnsdoc-{}-{stamp}.md", app.domain);
+                        let json_path = format!("dnsdoc-{}-{stamp}.json", app.domain);
+                        let res = std::fs::write(&md_path, report::render_markdown(&app))
+                            .and_then(|()| std::fs::write(&json_path, report::render_json(&app)));
+                        app.status = match res {
+                            Ok(()) => format!("exported {md_path} + {json_path}"),
+                            Err(e) => format!("export failed: {e}"),
+                        };
+                    }
+                    Action::ReverseLookup(ip_str) => {
+                        match ip_str.parse::<std::net::IpAddr>() {
+                            Ok(ip) => {
+                                app.reverse_result.clear();
+                                spawn_reverse(ip, tx.clone());
+                            }
+                            Err(_) => app.status = "invalid IP".into(),
+                        }
+                    }
                     Action::DomainChanged => {
                         match validate_domain(&app.domain) {
                             Ok(d) => {
@@ -170,6 +192,56 @@ fn spawn_all(app: &App, cfg: &Config, tx: mpsc::Sender<Msg>) {
     spawn_tab(app, cfg, Tab::Propagation, tx.clone());
     spawn_tab(app, cfg, Tab::Audit, tx.clone());
     spawn_tab(app, cfg, Tab::Trace, tx);
+}
+
+/// PTR lookup + forward confirmation, one line per finding via Msg::Reverse.
+fn spawn_reverse(ip: std::net::IpAddr, tx: mpsc::Sender<Msg>) {
+    let seed: std::net::IpAddr = "8.8.8.8".parse().unwrap();
+    tokio::spawn(async move {
+        let ptr = dns::reverse_name(ip);
+        let mut lines = vec![format!("PTR {ptr}")];
+        let out = dns::query(seed, &ptr, RecordType::PTR).await;
+        let names = match &out.error {
+            Some(e) => {
+                lines.push(format!("error: {e}"));
+                vec![]
+            }
+            None if out.answers.is_empty() => {
+                lines.push("no PTR record".into());
+                vec![]
+            }
+            None => out.answers.clone(),
+        };
+        let mut fcr = true;
+        for name in &names {
+            let n = name.trim_end_matches('.');
+            lines.push(format!("  → {n}"));
+            let mut back = false;
+            for rt in [RecordType::A, RecordType::AAAA] {
+                let fwd = dns::query(seed, n, rt).await;
+                if let Some(e) = fwd.error {
+                    lines.push(format!("    {rt:?}: {e}"));
+                } else if fwd.answers.is_empty() {
+                    lines.push(format!("    {rt:?}: none"));
+                } else {
+                    lines.push(format!("    {rt:?}: {}", fwd.answers.join(", ")));
+                    back |= fwd
+                        .answers
+                        .iter()
+                        .any(|a| a.parse::<std::net::IpAddr>().ok() == Some(ip));
+                }
+            }
+            fcr &= back;
+        }
+        if !names.is_empty() {
+            lines.push(if fcr {
+                "FCrDNS: ✓ forward-confirmed".into()
+            } else {
+                "FCrDNS: ✗ name does not resolve back to this IP".into()
+            });
+        }
+        let _ = tx.send(Msg::Reverse(lines)).await;
+    });
 }
 
 fn spawn_monitor(app: &App, cfg: &Config, tx: mpsc::Sender<Msg>) {
