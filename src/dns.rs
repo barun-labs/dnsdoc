@@ -140,7 +140,16 @@ pub async fn authoritative_ns(domain: &str) -> Result<Vec<(String, IpAddr)>> {
 /// Answer for `domain`/`rtype` straight from the first reachable authoritative NS.
 pub async fn authoritative_answer(domain: &str, rtype: RecordType) -> Result<Vec<String>> {
     let ns = authoritative_ns(domain).await?;
-    for (_, ip) in &ns {
+    answer_from_ns(&ns, domain, rtype).await
+}
+
+/// Same, but reuses an already-fetched NS set.
+pub async fn answer_from_ns(
+    ns: &[(String, IpAddr)],
+    domain: &str,
+    rtype: RecordType,
+) -> Result<Vec<String>> {
+    for (_, ip) in ns {
         let out = query(*ip, domain, rtype).await;
         if out.error.is_none() {
             return Ok(out.answers);

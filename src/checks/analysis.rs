@@ -144,6 +144,24 @@ pub fn synthesize(
         });
     }
 
+    // Correlation: SOA serials differ + propagation not clean → zone version lag.
+    let soa_bad = audit
+        .iter()
+        .find(|c| c.name == "SOA serial" && c.severity != Severity::Ok);
+    if inconsistent {
+        if let Some(s) = soa_bad {
+            out.push(Diagnosis {
+                headline: "Nameservers serve different zone versions — secondary lag or stuck transfer".into(),
+                severity: Severity::Warn,
+                evidence: vec![
+                    format!("based on: {}", s.detail),
+                    "resolvers hitting the out-of-date NS answer from an older zone".into(),
+                    "check zone transfer (AXFR/IXFR) or push from the primary".into(),
+                ],
+            });
+        }
+    }
+
     if let Some(l) = lame_bad {
         out.push(Diagnosis {
             headline: "One or more nameservers are lame — intermittent failures likely".into(),
@@ -172,6 +190,7 @@ pub fn synthesize(
             continue;
         }
         let already = (c.name == "NS delegation" && ns_bad.is_some() && inconsistent)
+            || (c.name == "SOA serial" && soa_bad.is_some() && inconsistent)
             || (c.name == "Lame servers" && lame_bad.is_some());
         if already {
             continue;
@@ -290,6 +309,27 @@ mod tests {
         assert_eq!(out[0].severity, Severity::Err);
         assert!(out[0].headline.to_lowercase().contains("delegation"));
         assert!(out[0].evidence.iter().any(|e| e.contains("mismatch")));
+    }
+
+    #[test]
+    fn soa_mismatch_plus_propagation_flags_zone_lag_once() {
+        let prop = Diagnosis {
+            headline: "Still propagating".into(),
+            severity: Severity::Warn,
+            evidence: vec![],
+        };
+        let audit = vec![CheckResult {
+            name: "SOA serial".into(),
+            severity: Severity::Warn,
+            detail: "serials differ across NS: [2024010101, 2024010105]".into(),
+        }];
+        let out = synthesize(Some(&prop), &audit, &[]);
+        let lag: Vec<_> = out
+            .iter()
+            .filter(|d| d.headline.contains("zone versions") || d.evidence.iter().any(|e| e.contains("serials differ")))
+            .collect();
+        assert_eq!(lag.len(), 1, "SOA finding must appear exactly once");
+        assert!(lag[0].headline.contains("secondary lag"));
     }
 
     #[test]

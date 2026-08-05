@@ -59,6 +59,8 @@ pub struct MonitorEvent {
 pub enum Msg {
     Propagation(Vec<PropagationRow>),
     AuthAnswer(Vec<String>),
+    /// Authoritative NS set as "ns1.example.com. (1.2.3.4)" display strings.
+    AuthNs(Vec<String>),
     Audit(Vec<CheckResult>),
     Trace(Vec<TraceHop>),
     TraceHopArrived(TraceHop),

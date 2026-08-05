@@ -66,6 +66,7 @@ pub struct App {
     pub rtype: RecordType,
     pub prop_rows: Vec<PropagationRow>,
     pub auth_answer: Vec<String>,
+    pub auth_ns: Vec<String>,
     pub audit: Vec<CheckResult>,
     pub trace: Vec<TraceHop>,
     pub monitor_log: Vec<MonitorEvent>,
@@ -89,6 +90,7 @@ impl App {
             rtype: RecordType::A,
             prop_rows: vec![],
             auth_answer: vec![],
+            auth_ns: vec![],
             audit: vec![],
             trace: vec![],
             monitor_log,
@@ -248,6 +250,7 @@ impl App {
                 self.loading = false;
             }
             Msg::AuthAnswer(a) => self.auth_answer = a,
+            Msg::AuthNs(ns) => self.auth_ns = ns,
             Msg::Audit(r) => {
                 self.audit = r;
                 self.loading = false;

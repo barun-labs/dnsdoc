@@ -12,4 +12,4 @@ COPY --from=build /src/target/release/dnsdoc /usr/local/bin/dnsdoc
 ENV TERM=xterm-256color
 EXPOSE 7681
 # ponytail: fixed demo domain; make it a form/env if demo needs per-visitor domains
-CMD ["ttyd", "-W", "dnsdoc", "example.com"]
+CMD ["ttyd", "-W", "-t", "fontSize=18", "dnsdoc", "example.com"]

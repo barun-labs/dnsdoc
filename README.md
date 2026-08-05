@@ -91,6 +91,8 @@ name = "time-my"
 resolvers = [
   { name = "TIME-1", ip = "210.19.6.81" },
   { name = "TIME-2", ip = "210.19.6.82" },
+  { name = "TIME-ANS-1", ip = "210.19.6.85" },
+  { name = "TIME-ANS-2", ip = "210.19.6.86" },
 ]
 
 [[profile]]

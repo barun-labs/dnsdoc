@@ -12,7 +12,16 @@ pub async fn run(
     resolvers: Vec<Resolver>,
     tx: mpsc::Sender<Msg>,
 ) {
-    let auth = dns::authoritative_answer(&domain, rtype).await.ok();
+    let ns = dns::authoritative_ns(&domain).await.ok();
+    let auth = match &ns {
+        Some(ns) => {
+            let display: Vec<String> =
+                ns.iter().map(|(name, ip)| format!("{name} ({ip})")).collect();
+            let _ = tx.send(Msg::AuthNs(display)).await;
+            dns::answer_from_ns(ns, &domain, rtype).await.ok()
+        }
+        None => None,
+    };
     if let Some(a) = &auth {
         let _ = tx.send(Msg::AuthAnswer(a.clone())).await;
     }

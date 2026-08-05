@@ -31,6 +31,44 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.picker_open {
         draw_profile_picker(f, app);
     }
+    if app.input_mode {
+        draw_domain_input(f, app);
+    }
+}
+
+fn draw_domain_input(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let w = 60.min(area.width);
+    let rect = Rect {
+        x: area.width.saturating_sub(w) / 2,
+        y: area.height.saturating_sub(3) / 2,
+        width: w,
+        height: 3,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(app.input_buf.clone(), Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("█", Style::default().fg(Color::Cyan)),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" Domain — Enter run · Esc cancel "),
+        ),
+        rect,
+    );
+}
+
+/// One-line summary of the authoritative NS set, essential troubleshooting context.
+fn ns_line(app: &App) -> Line<'static> {
+    let text = if app.auth_ns.is_empty() {
+        "NS: (not resolved yet)".to_string()
+    } else {
+        format!("NS: {}", app.auth_ns.join(" · "))
+    };
+    Line::from(Span::styled(text, Style::default().fg(Color::Cyan)))
 }
 
 fn draw_profile_picker(f: &mut Frame, app: &App) {
@@ -125,14 +163,15 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
     // Split: reasoned diagnosis banner on top, resolver table below.
     let rows_present = !app.prop_rows.is_empty();
     let diag = analyze_propagation(&format!("{:?}", app.rtype), &app.auth_answer, &app.prop_rows);
-    let banner_h = if rows_present { (diag.evidence.len() as u16 + 3).min(9) } else { 3 };
+    let banner_h = if rows_present { (diag.evidence.len() as u16 + 4).min(10) } else { 3 };
     let split = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(banner_h), Constraint::Min(3)])
         .split(area);
 
     if rows_present {
-        let items = diagnosis_items(&diag);
+        let mut items = vec![ListItem::new(ns_line(app))];
+        items.extend(diagnosis_items(&diag));
         f.render_widget(
             List::new(items)
                 .block(Block::default().borders(Borders::ALL).title(" Diagnosis ")),
@@ -334,7 +373,7 @@ fn draw_analysis(f: &mut Frame, app: &App, area: Rect) {
     };
     let diagnoses = synthesize(prop.as_ref(), &app.audit, &app.trace);
 
-    let mut items = vec![];
+    let mut items = vec![ListItem::new(ns_line(app)), ListItem::new(Line::from(""))];
     for (i, d) in diagnoses.iter().enumerate() {
         if i > 0 {
             items.push(ListItem::new(Line::from("")));
@@ -350,7 +389,7 @@ fn draw_analysis(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let text = if app.input_mode {
-        format!("domain> {}_", app.input_buf)
+        format!("domain> {}_ (Enter run · Esc cancel)", app.input_buf)
     } else if !app.status.is_empty() {
         app.status.clone()
     } else {

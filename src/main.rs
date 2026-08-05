@@ -116,6 +116,8 @@ async fn run(
                                 app.domain = d;
                                 app.status.clear();
                                 app.prop_rows.clear();
+                                app.auth_ns.clear();
+                                app.auth_answer.clear();
                                 app.audit.clear();
                                 app.trace.clear();
                                 app.monitor_started = false;
