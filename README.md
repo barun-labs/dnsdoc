@@ -26,7 +26,7 @@ dnsdoc example.com --profile privacy   # start on a resolver profile
 | Key        | Action                                  |
 |------------|-----------------------------------------|
 | `q`        | quit                                    |
-| `Tab` / `1`–`5` | switch tab                         |
+| `Tab` / `1`–`8` | switch tab                         |
 | `←` / `→`  | previous / next tab                     |
 | `↑` / `↓`  | scroll the current tab                  |
 | `r`        | re-run the current tab                  |
@@ -34,6 +34,8 @@ dnsdoc example.com --profile privacy   # start on a resolver profile
 | `d`        | change domain (Enter commit, Esc cancel; `←`/`→`/Home/End move the cursor) |
 | `p`        | cycle resolver profile                  |
 | `P`        | profile picker (↑/↓, Enter, Esc)        |
+| `e`        | export full report to `dnsdoc-<domain>-<time>.md` + `.json` |
+| `v`        | reverse lookup (type an IP, Enter)      |
 | `?`        | help overlay                            |
 
 ## Tabs
@@ -45,21 +47,37 @@ dnsdoc example.com --profile privacy   # start on a resolver profile
   color-banded. Dead resolvers show their error inline and never block the
   rest. Stale answers get a wall-clock ETA for when caches clear.
 - **Audit** — external health checks with OK / WARN / ERR severity: NS
-  delegation consistency, NS redundancy (count + /24 spread), SOA serial
-  agreement, SOA timer sanity, lame-server detection, CAA, MX target sanity
-  (resolvable, no CNAME, no IP literal, null MX), SPF (present, single
-  record, ≤10 lookups), DMARC policy, DKIM selector probe, TTL sanity, apex
-  CNAME, open AXFR zone transfer, wildcard records.
+  delegation consistency, NS redundancy (count + /24 spread), glue
+  consistency (parent referral vs child zone), SOA serial agreement, SOA
+  timer sanity + date-encoded serial decode, lame-server detection, TCP/53
+  transport, EDNS support, CAA, MX target sanity (resolvable, no CNAME, no IP
+  literal, null MX), CNAME chain (loops, dangling, over-long), SPF (present,
+  single record, ≤10 lookups), DMARC policy, DKIM selector probe, TTL sanity,
+  apex CNAME, HTTPS/SVCB and TLSA/DANE presence, open AXFR zone transfer,
+  wildcard records. Authoritative checks query with recursion disabled
+  (`RD=0`) and say so.
 - **Trace** — iterative resolution from the root servers down to the
-  authoritative NS, one hop per zone cut, with latency and DNSSEC status
-  (`signed`, `unsigned zone`, or `BROKEN` where the chain fails).
+  authoritative NS, one hop per zone cut, with latency, the full referral NS
+  set (name + glue IP) under each hop, and DNSSEC status (`signed`,
+  `unsigned zone`, or `BROKEN` where the chain fails).
+- **DNSSEC** — RRSIG expiry watch with a per-signature countdown (flags
+  expired and expiring-soon), a resolver validation matrix (AD flag per
+  resolver, DO=1), and DS↔DNSKEY chain detail per zone cut with algorithm
+  names and deprecated-algorithm warnings.
+- **Mail** — per-MX A/AAAA with PTR and forward-confirmed reverse DNS
+  (FCrDNS), MTA-STS / TLS-RPT / BIMI record presence, and DKIM selector key
+  strength (flags weak ~1024-bit RSA, notes ed25519). MTA-STS policy body is
+  not fetched (HTTPS is out of scope).
+- **Sweep** — probes a list of common subdomains (www, mail, api, dev,
+  staging, vpn, autodiscover, _acme-challenge, ns1/ns2, …) and streams the
+  hits with their records.
 - **Monitor** — polls the domain on an interval (default 60s), diffs each
   poll against the last, and logs changes with relative timestamps and a TTL
   countdown per record. Answer sets seen before are tagged `↻ round-robin?`
   and dimmed instead of logged as changes. The change log persists to disk
   and reloads on the next start.
-- **Analysis** — runs all three checks and synthesizes ranked probable
-  causes, each stated as a plain-language call with the evidence it rests on
+- **Analysis** — runs propagation, audit and trace and synthesizes ranked
+  probable causes, each stated as a plain-language call with the evidence it rests on
   (a `based on:` line per fact). Correlations include delegation drift, zone
   version lag, broken DNSSEC cross-referenced against resolvers failing right
   now, slow authoritative paths, and resolver latency outliers. Tab titles
@@ -126,5 +144,6 @@ cargo test -- --ignored   # live tests against real public DNS
 
 ## Scope
 
-External queries only. Not included in v1: geo/DoH region checks, a
+External DNS queries only. Not included: geo/DoH region checks, HTTP fetches
+(so MTA-STS policy bodies are not retrieved — only their DNS records), a
 background daemon with desktop alerts, and zone-file / `named.conf` analysis.
