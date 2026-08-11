@@ -2,7 +2,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Scrollbar,
+    Block, BorderType, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Scrollbar,
     ScrollbarOrientation, ScrollbarState, Table, Tabs,
 };
 use ratatui::Frame;
@@ -29,6 +29,48 @@ fn latency_color(ms: u128) -> Color {
     }
 }
 
+// -- palette: 2 new colors, everything else (Green/Yellow/Red/DarkGray/Cyan) unchanged --
+const CHROME: Color = Color::Blue;   // new: tab-bar frame, status rule, chrome title chip
+const MODAL: Color = Color::Cyan;    // existing meaning kept: popups, cursors, active-tab fill
+
+// -- severity -> border tint (Severity has no Ord; rank locally) --
+fn sev_rank(s: Severity) -> u8 {
+    match s { Severity::Ok => 0, Severity::Warn => 1, Severity::Err => 2 }
+}
+fn worst_severity(sevs: impl IntoIterator<Item = Severity>) -> Severity {
+    sevs.into_iter().max_by_key(|s| sev_rank(*s)).unwrap_or(Severity::Ok)
+}
+fn tint(worst: Severity) -> Color {
+    match worst {
+        Severity::Err => Color::Red,
+        Severity::Warn => Color::Yellow,
+        Severity::Ok => Color::Reset, // calm: terminal default fg, not Green - avoids
+                                       // green-border/green-verdict scan ambiguity
+    }
+}
+
+fn chrome_block(title: Line<'static>) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(CHROME))
+        .title(title)
+}
+fn modal_block(title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(MODAL))
+        .title(format!(" {title} "))
+}
+fn panel_block(title: &str, worst: Severity) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(tint(worst)))
+        .title(format!(" {title} "))
+}
+
 pub fn relative_age(ts: &str, now: chrono::DateTime<chrono::Utc>) -> String {
     let Ok(t) = chrono::DateTime::parse_from_rfc3339(ts) else {
         return ts.to_string();
@@ -43,7 +85,20 @@ pub fn relative_age(ts: &str, now: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// Skip `scroll` items and attach a scrollbar when content overflows.
-fn scrolled_list(f: &mut Frame, area: Rect, items: Vec<ListItem<'static>>, block: Block<'static>, scroll: u16, noun: &str) {
+/// `prefix` is how many leading `items` are decorative (a summary line and
+/// its divider, say) rather than real countable rows — excluded from the
+/// "N/M {noun}" fill footer so e.g. Audit's 2 prepended lines don't inflate
+/// "3 checks" into "5 checks". Row/scroll math still counts every item
+/// (decorative rows still occupy real screen space).
+fn scrolled_list(
+    f: &mut Frame,
+    area: Rect,
+    items: Vec<ListItem<'static>>,
+    block: Block<'static>,
+    scroll: u16,
+    noun: &str,
+    prefix: usize,
+) {
     let total = items.len();
     let visible = area.height.saturating_sub(2) as usize; // borders
     let max_off = total.saturating_sub(visible);
@@ -58,7 +113,8 @@ fn scrolled_list(f: &mut Frame, area: Rect, items: Vec<ListItem<'static>>, block
             &mut state,
         );
     } else {
-        render_list_fill(f, area, total, total.min(visible) as u16, noun);
+        let data_total = total.saturating_sub(prefix);
+        render_list_fill(f, area, data_total, data_total as u16, noun);
     }
 }
 
@@ -88,7 +144,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(3), // tabs
             Constraint::Min(1),    // body
-            Constraint::Length(1), // status
+            Constraint::Length(2), // status
         ])
         .split(f.area());
 
@@ -153,12 +209,7 @@ fn draw_add_resolver(f: &mut Frame, app: &App) {
     }
     f.render_widget(
         Paragraph::new(Line::from(spans))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(" Add resolver — name ip · Enter save · Esc cancel "),
-        ),
+        .block(modal_block("Add resolver — name ip · Enter save · Esc cancel")),
         rect,
     );
 }
@@ -189,22 +240,17 @@ fn draw_reverse(f: &mut Frame, app: &App) {
             .split(rect);
         f.render_widget(
             Paragraph::new(app.reverse_buf.clone())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Cyan))
-                        .title(" Reverse — IP + Enter look up · Esc close "),
-                ),
+                .block(modal_block("Reverse — IP + Enter look up · Esc close")),
             split[0],
         );
         f.render_widget(
-            List::new(results).block(Block::default().borders(Borders::ALL)),
+            List::new(results).block(panel_block("Results", Severity::Ok)),
             split[1],
         );
     } else {
         f.render_widget(
             List::new(results)
-                .block(Block::default().borders(Borders::ALL).title(" Reverse — v to look up another ")),
+                .block(modal_block("Reverse — v to look up another")),
             rect,
         );
     }
@@ -213,16 +259,7 @@ fn draw_reverse(f: &mut Frame, app: &App) {
 /// Centered popup listing every key binding; key column cyan.
 fn draw_help(f: &mut Frame) {
     let area = f.area();
-    let w = 46.min(area.width);
-    let h = 18.min(area.height);
-    let rect = Rect {
-        x: area.width.saturating_sub(w) / 2,
-        y: area.height.saturating_sub(h) / 2,
-        width: w,
-        height: h,
-    };
-    f.render_widget(Clear, rect);
-    let mut items: Vec<ListItem> = [
+    let keys: [(&str, &str); 11] = [
         ("q", "quit"),
         ("Tab/1-8/←→", "tabs"),
         ("↑↓", "scroll"),
@@ -234,22 +271,41 @@ fn draw_help(f: &mut Frame) {
         ("v", "reverse lookup"),
         ("a", "add resolver"),
         ("?", "help"),
-    ]
-    .iter()
-    .map(|(k, v)| {
-        ListItem::new(Line::from(vec![
-            Span::styled(format!(" {k:<10} "), Style::default().fg(Color::Cyan)),
-            Span::raw(*v),
-        ]))
-    })
-    .collect();
+    ];
+    let footer = format!(" v{} · {}", env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_REPOSITORY"));
+    // Measure source strings, not widgets: the widest rendered row is the
+    // " {key:<10} value" line (1 + pad + 1 + value) or the footer.
+    let max_content = keys
+        .iter()
+        .map(|(k, v)| 1 + k.len().max(10) + 1 + v.len())
+        .max()
+        .unwrap_or(0)
+        .max(footer.len());
+    let w = (max_content as u16 + 3).min(area.width);
+    let mut items: Vec<ListItem> = keys
+        .iter()
+        .map(|(k, v)| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!(" {k:<10} "), Style::default().fg(Color::Cyan)),
+                Span::raw(*v),
+            ]))
+        })
+        .collect();
     items.push(ListItem::new(Line::from("")));
     items.push(ListItem::new(Line::from(Span::styled(
-        format!(" v{} · {}", env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_REPOSITORY")),
+        footer,
         Style::default().fg(Color::DarkGray),
     ))));
+    let h = (items.len() as u16 + 2).min(area.height);
+    let rect = Rect {
+        x: area.width.saturating_sub(w) / 2,
+        y: area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
     f.render_widget(
-        List::new(items).block(Block::default().borders(Borders::ALL).title(" Keys — Esc/?/q close ")),
+        List::new(items).block(modal_block("Keys — Esc/?/q close")),
         rect,
     );
 }
@@ -285,12 +341,7 @@ fn draw_domain_input(f: &mut Frame, app: &App) {
     }
     f.render_widget(
         Paragraph::new(Line::from(spans))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(" Domain — Enter run · Esc cancel "),
-        ),
+        .block(modal_block("Domain — Enter run · Esc cancel")),
         rect,
     );
 }
@@ -307,7 +358,15 @@ fn ns_line(app: &App) -> Line<'static> {
 
 fn draw_profile_picker(f: &mut Frame, app: &App) {
     let area = f.area();
-    let w = 40.min(area.width);
+    // Title alone is 45 chars — wider than the old fixed 40-col box.
+    let title_len = "Resolver profile — Enter select · Esc close".len();
+    let content_len = app
+        .profiles
+        .iter()
+        .map(|p| format!("{} ({} resolvers)", p.name, p.resolvers.len()).len())
+        .max()
+        .unwrap_or(0);
+    let w = (title_len.max(content_len) as u16 + 3).min(area.width);
     let h = (app.profiles.len() as u16 + 2).min(area.height);
     let rect = Rect {
         x: area.width.saturating_sub(w) / 2,
@@ -332,11 +391,7 @@ fn draw_profile_picker(f: &mut Frame, app: &App) {
         })
         .collect();
     f.render_widget(
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Resolver profile — Enter select · Esc close "),
-        ),
+        List::new(items).block(modal_block("Resolver profile — Enter select · Esc close")),
         rect,
     );
 }
@@ -415,16 +470,10 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     let tabs = Tabs::new(titles)
         .select(app.tab.index())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(
-                    " dnsdoc v{} — {} · [{}] ",
-                    env!("CARGO_PKG_VERSION"),
-                    app.domain,
-                    app.active_profile().name
-                )),
-        )
+        .block(chrome_block(Line::styled(
+            format!(" dnsdoc v{} — {} · [{}] ", env!("CARGO_PKG_VERSION"), app.domain, app.active_profile().name),
+            Style::default().fg(Color::Black).bg(CHROME).add_modifier(Modifier::BOLD),
+        )))
         .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD));
     f.render_widget(tabs, area);
 }
@@ -452,7 +501,7 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
         items.extend(diagnosis_items(&diag));
         f.render_widget(
             List::new(items)
-                .block(Block::default().borders(Borders::ALL).title(" Diagnosis ")),
+                .block(panel_block("Diagnosis", diag.severity)),
             split[0],
         );
     } else {
@@ -467,7 +516,7 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "press 'r' to run".to_string()
             })
-            .block(Block::default().borders(Borders::ALL).title(" Diagnosis ")),
+            .block(panel_block("Diagnosis", Severity::Ok)),
             split[0],
         );
     }
@@ -506,7 +555,7 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    let header = Row::new(["Resolver", "Answer", "TTL", "ms", "✓"])
+    let header = Row::new(["Resolver", "IP", "Answer", "TTL", "ms", "✓"])
         .style(Style::default().add_modifier(Modifier::BOLD));
     let rows: Vec<Row> = app
         .prop_rows
@@ -528,7 +577,8 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
                 None => Span::raw("·"),
             };
             Row::new(vec![
-                Cell::from(format!("{} ({})", r.resolver, r.ip)),
+                Cell::from(r.resolver.clone()),
+                Cell::from(r.ip.to_string()),
                 Cell::from(answer).style(style),
                 Cell::from(r.ttl.map(|t| t.to_string()).unwrap_or_default()),
                 Cell::from(r.latency_ms.map(|l| l.to_string()).unwrap_or_default())
@@ -548,18 +598,26 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
     let off = (app.scroll as usize).min(max_off);
     let rows: Vec<Row> = rows.into_iter().skip(off).collect();
 
+    let table_sev = if app.prop_rows.iter().any(|r| {
+        r.matches_auth == Some(false) || r.error.as_deref().is_some_and(|e| e != "timeout")
+    }) {
+        Severity::Err
+    } else {
+        Severity::Ok
+    };
     let table = Table::new(
         rows,
         [
-            Constraint::Length(28),
+            Constraint::Length(18),
             Constraint::Min(20),
-            Constraint::Length(7),
-            Constraint::Length(5),
+            Constraint::Min(24),
+            Constraint::Length(10),
+            Constraint::Length(6),
             Constraint::Length(3),
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(title));
+    .block(panel_block(&title, table_sev));
     f.render_widget(table, split[2]);
     if total > visible {
         let mut state = ScrollbarState::new(max_off).position(off);
@@ -673,25 +731,44 @@ fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
             "press 'r' to run audit".to_string()
         })]
     } else {
-        app.audit
-            .iter()
-            .map(|c| {
-                let (tag, style) = sev_style(c.severity);
-                ListItem::new(Line::from(vec![
-                    Span::styled(tag, style.add_modifier(Modifier::BOLD)),
-                    Span::raw(format!("  {:<16} ", c.name)),
-                    Span::raw(c.detail.clone()),
-                ]))
-            })
-            .collect()
+        let err_n = app.audit.iter().filter(|c| c.severity == Severity::Err).count();
+        let warn_n = app.audit.iter().filter(|c| c.severity == Severity::Warn).count();
+        let ok_n = app.audit.iter().filter(|c| c.severity == Severity::Ok).count();
+        let mut items = vec![
+            ListItem::new(format!(
+                "{} checks · {} err · {} warn · {} ok",
+                app.audit.len(),
+                err_n,
+                warn_n,
+                ok_n
+            )),
+            ListItem::new(Line::from(Span::styled(
+                "─".repeat(48),
+                Style::default().fg(Color::DarkGray),
+            ))),
+        ];
+        items.extend(
+            app.audit
+                .iter()
+                .map(|c| {
+                    let (tag, style) = sev_style(c.severity);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(tag, style.add_modifier(Modifier::BOLD)),
+                        Span::raw(format!("  {:<16} ", c.name)),
+                        Span::raw(c.detail.clone()),
+                    ]))
+                }),
+        );
+        items
     };
     scrolled_list(
         f,
         area,
         items,
-        Block::default().borders(Borders::ALL).title(" Audit "),
+        panel_block("Audit", worst_severity(app.audit.iter().map(|c| c.severity))),
         app.scroll,
         "checks",
+        2,
     );
 }
 
@@ -738,9 +815,10 @@ fn draw_dnssec(f: &mut Frame, app: &App, area: Rect) {
         f,
         area,
         items,
-        Block::default().borders(Borders::ALL).title(" DNSSEC "),
+        panel_block("DNSSEC", worst_severity(app.dnssec.iter().map(|c| c.severity))),
         app.scroll,
         "records",
+        0,
     );
 }
 
@@ -752,25 +830,44 @@ fn draw_mail(f: &mut Frame, app: &App, area: Rect) {
             "press 'r' to run mail checks".to_string()
         })]
     } else {
-        app.mail
-            .iter()
-            .map(|c| {
-                let (tag, style) = sev_style(c.severity);
-                ListItem::new(Line::from(vec![
-                    Span::styled(tag, style.add_modifier(Modifier::BOLD)),
-                    Span::raw(format!("  {:<16} ", c.name)),
-                    Span::raw(c.detail.clone()),
-                ]))
-            })
-            .collect()
+        let err_n = app.mail.iter().filter(|c| c.severity == Severity::Err).count();
+        let warn_n = app.mail.iter().filter(|c| c.severity == Severity::Warn).count();
+        let ok_n = app.mail.iter().filter(|c| c.severity == Severity::Ok).count();
+        let mut items = vec![
+            ListItem::new(format!(
+                "{} checks · {} err · {} warn · {} ok",
+                app.mail.len(),
+                err_n,
+                warn_n,
+                ok_n
+            )),
+            ListItem::new(Line::from(Span::styled(
+                "─".repeat(48),
+                Style::default().fg(Color::DarkGray),
+            ))),
+        ];
+        items.extend(
+            app.mail
+                .iter()
+                .map(|c| {
+                    let (tag, style) = sev_style(c.severity);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(tag, style.add_modifier(Modifier::BOLD)),
+                        Span::raw(format!("  {:<16} ", c.name)),
+                        Span::raw(c.detail.clone()),
+                    ]))
+                }),
+        );
+        items
     };
     scrolled_list(
         f,
         area,
         items,
-        Block::default().borders(Borders::ALL).title(" Mail "),
+        panel_block("Mail", worst_severity(app.mail.iter().map(|c| c.severity))),
         app.scroll,
         "checks",
+        2,
     );
 }
 
@@ -802,11 +899,10 @@ fn draw_sweep(f: &mut Frame, app: &App, area: Rect) {
         f,
         area,
         items,
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" Sweep — {} hits ", app.sweep_rows.len())),
+        panel_block(&format!("Sweep — {} hits", app.sweep_rows.len()), Severity::Ok),
         app.scroll,
         "hits",
+        0,
     );
 }
 
@@ -864,13 +960,21 @@ fn draw_trace(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect()
     };
+    // Same LAME/BROKEN detection the tab badge uses: any hop with an error,
+    // a LAME note, or a broken DNSSEC verdict tints the panel red.
+    let broken = app.trace.iter().any(|h| {
+        h.error.is_some()
+            || h.note.as_deref().is_some_and(|n| n.contains("LAME"))
+            || h.dnssec.as_deref().is_some_and(|d| d.contains("BROKEN"))
+    });
     scrolled_list(
         f,
         area,
         items,
-        Block::default().borders(Borders::ALL).title(" Delegation trace "),
+        panel_block("Delegation trace", if broken { Severity::Err } else { Severity::Ok }),
         app.scroll,
         "hops",
+        0,
     );
 }
 
@@ -916,7 +1020,7 @@ fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
         snap.push(ListItem::new("polling…"));
     }
     f.render_widget(
-        List::new(snap).block(Block::default().borders(Borders::ALL).title(" Current ")),
+        List::new(snap).block(panel_block("Current", Severity::Ok)),
         cols[0],
     );
 
@@ -950,9 +1054,10 @@ fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
         f,
         cols[1],
         log,
-        Block::default().borders(Borders::ALL).title(" Change log "),
+        panel_block("Change log", Severity::Ok),
         app.scroll,
         "events",
+        0,
     );
 }
 
@@ -965,7 +1070,7 @@ fn draw_analysis(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "press 'r' to run all checks and synthesize a diagnosis"
             })
-            .block(Block::default().borders(Borders::ALL).title(" Analysis ")),
+            .block(panel_block("Analysis", Severity::Ok)),
             area,
         );
         return;
@@ -995,13 +1100,22 @@ fn draw_analysis(f: &mut Frame, app: &App, area: Rect) {
         f,
         area,
         items,
-        Block::default().borders(Borders::ALL).title(title),
+        panel_block(&title, worst_severity(diagnoses.iter().map(|d| d.severity))),
         app.scroll,
         "findings",
+        0,
     );
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+    f.render_widget(
+        Paragraph::new("─".repeat(area.width as usize)).style(Style::default().fg(CHROME)),
+        rows[0],
+    );
     let text = if app.input_mode {
         format!("domain> {}_ (Enter run · Esc cancel)", app.input_buf)
     } else if !app.status.is_empty() {
@@ -1011,7 +1125,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     };
     f.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::Gray)),
-        area,
+        rows[1],
     );
 }
 
@@ -1084,6 +1198,30 @@ mod tests {
         assert!(rendered.contains("end of results"));
         assert!(rendered.contains("min 5ms"));
         assert!(rendered.contains("1 errors"));
+    }
+
+    #[test]
+    fn audit_summary_counts() {
+        let mut app = App::new(
+            "example.com".into(),
+            vec![],
+            vec![crate::config::Profile { name: "default".into(), resolvers: vec![] }],
+        );
+        app.tab = Tab::Audit;
+        app.audit = vec![
+            CheckResult { name: "err check".into(), severity: Severity::Err, detail: "x".into() },
+            CheckResult { name: "warn check".into(), severity: Severity::Warn, detail: "x".into() },
+            CheckResult { name: "ok check".into(), severity: Severity::Ok, detail: "x".into() },
+        ];
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let rendered = buffer_to_string(terminal.backend().buffer());
+        println!("{rendered}");
+        assert!(rendered.contains("3 checks · 1 err · 1 warn · 1 ok"));
+        // The fill footer must count real checks, not the summary+divider
+        // lines prepended ahead of them - regression check for that bug.
+        assert!(rendered.contains("3/3 checks · end of results"));
     }
 
     #[test]

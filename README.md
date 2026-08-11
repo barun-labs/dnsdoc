@@ -5,6 +5,13 @@ zone-file access needed. Five views: propagation, config audit,
 delegation/DNSSEC trace, live monitoring, and a reasoned analysis that backs
 every verdict with the evidence it rests on.
 
+Three border weights carry the structure at a glance: a thick blue frame
+for the app chrome (tab bar, status line), double-line borders on popups,
+and rounded panels for content — panels holding a real problem (an error,
+a mismatch) tint red, a warning tints yellow, everything else stays calm.
+Green/yellow/red keep their existing meaning throughout; only the frame
+around them changed.
+
 ## Install
 
 ```bash
