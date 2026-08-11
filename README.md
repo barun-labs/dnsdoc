@@ -110,13 +110,12 @@ Custom resolvers are added on top of the built-in public list.
 
 ### Resolver profiles
 
-Five presets ship built in: **all** (9 reliable public resolvers + your
+Four presets ship built in: **all** (9 reliable public resolvers + your
 custom ones), **global** (Google/Cloudflare/Quad9/OpenDNS), **privacy**
-(Quad9/AdGuard), **time** (the 14-resolver TIME DNS lab — GLEN/UPM
-recursive and anycast pairs, plus the CACHE anycast pair), and **custom**
-(empty until you add to it, see below). Define your own on top — e.g. ISP
-resolver sets — and switch with `p`/`P` in the TUI or `--profile NAME` on
-the CLI:
+(Quad9/AdGuard), and **custom** (empty until you add to it, see below).
+Define your own on top — private infra, ISP resolver sets, whatever you
+don't want baked into a public binary — and switch with `p`/`P` in the TUI
+or `--profile NAME` on the CLI:
 
 ```toml
 [[profile]]
@@ -126,6 +125,10 @@ resolvers = [
   { name = "Unifi-2", ip = "202.188.18.188" },
 ]
 ```
+
+Profiles defined this way live only in your local `config.toml` — never
+committed, never built into the binary. That's the right place for anything
+you don't want showing up in a public repo's source or git history.
 
 ### Custom resolvers (added from the TUI)
 

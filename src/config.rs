@@ -74,32 +74,6 @@ pub fn builtin_resolvers() -> Vec<Resolver> {
         .collect()
 }
 
-/// Private infra DNS resolvers (time lab). Not part of the public builtins.
-pub fn time_resolvers() -> Vec<Resolver> {
-    let list: &[(&str, &str)] = &[
-        ("GLEN-R1", "210.19.6.97"),
-        ("UPM-R2", "210.19.6.129"),
-        ("GLEN-A1", "210.19.6.100"),
-        ("UPM-A2", "210.19.6.132"),
-        ("ANS-ANYCAST-1", "210.19.6.85"),
-        ("ANS-ANYCAST-2", "210.19.6.86"),
-        ("GLEN-C1", "210.19.6.103"),
-        ("GLEN-C2", "210.19.6.106"),
-        ("GLEN-C3", "210.19.6.109"),
-        ("UPM-C1", "210.19.6.135"),
-        ("UPM-C2", "210.19.6.138"),
-        ("UPM-C3", "210.19.6.141"),
-        ("CACHE-ANYCAST-1", "210.19.6.81"),
-        ("CACHE-ANYCAST-2", "210.19.6.82"),
-    ];
-    list.iter()
-        .map(|(name, ip)| Resolver {
-            name: name.to_string(),
-            ip: ip.parse().unwrap(),
-        })
-        .collect()
-}
-
 /// Subset of the builtins by name.
 fn preset(names: &[&str]) -> Vec<Resolver> {
     builtin_resolvers()
@@ -176,7 +150,6 @@ fn parse(toml_str: &str) -> Config {
             name: "privacy".into(),
             resolvers: preset(&["Quad9", "Quad9-2", "AdGuard"]),
         },
-        Profile { name: "time".into(), resolvers: time_resolvers() },
     ];
     for p in raw.profile {
         profiles.push(Profile {
@@ -241,21 +214,9 @@ mod tests {
     fn presets_exist_with_expected_sizes() {
         let cfg = parse("");
         let names: Vec<&str> = cfg.profiles.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["all", "global", "privacy", "time"]);
+        assert_eq!(names, ["all", "global", "privacy"]);
         assert_eq!(cfg.profiles[1].resolvers.len(), 8);
         assert_eq!(cfg.profiles[2].resolvers.len(), 3);
-        assert_eq!(cfg.profiles[3].resolvers.len(), 14);
-    }
-
-    #[test]
-    fn time_profile_has_expected_resolvers() {
-        let cfg = parse("");
-        let time = cfg.profiles.iter().find(|p| p.name == "time").unwrap();
-        assert_eq!(time.resolvers.len(), 14);
-        assert_eq!(time.resolvers[0].name, "GLEN-R1");
-        assert_eq!(time.resolvers[0].ip, "210.19.6.97".parse::<IpAddr>().unwrap());
-        assert_eq!(time.resolvers[13].name, "CACHE-ANYCAST-2");
-        assert_eq!(time.resolvers[13].ip, "210.19.6.82".parse::<IpAddr>().unwrap());
     }
 
     #[test]

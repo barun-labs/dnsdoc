@@ -6,24 +6,29 @@ the brainstorming skill's interactive Q&A and pre-approval steps were
 skipped per that skill's own precedence rule (explicit user instructions
 override skill process). This note exists so the decisions are on record.
 
+**2026-08-12 update:** the concrete resolver list below shipped as a
+builtin `time_resolvers()` in `src/config.rs` initially — this repo is
+public, and a private infra IP list has no business compiled into a public
+binary's source. It's been pulled out (see git history for the removal
+commit) in favor of the `[[profile]]` config.toml mechanism described under
+"Resolver profiles" — same as the "custom" profile below. The name/IP table
+stays here **redacted**: the decisions and shape are still accurate
+context, the actual addresses now live only in a local, gitignored
+`config.toml` on the hosts that need them.
+
 ## What shipped
 
-**New builtin profile `time`** — 14 resolvers for the TIME DNS lab,
-kept in a dedicated `time_resolvers()` function in `src/config.rs`,
-deliberately *not* folded into `builtin_resolvers()`/the `all` profile
-since these are private infra IPs, not public resolvers:
+**New profile `time`** (originally builtin, now operator-supplied via
+local `config.toml` — see the 2026-08-12 note above) — 14 resolvers for the
+TIME DNS lab, grouped by role:
 
-| Name | IP | Role |
-|---|---|---|
-| GLEN-R1 | 210.19.6.97 | recursive |
-| UPM-R2 | 210.19.6.129 | recursive |
-| GLEN-A1 | 210.19.6.100 | authoritative |
-| UPM-A2 | 210.19.6.132 | authoritative |
-| ANS-ANYCAST-1 | 210.19.6.85 | anycast VIP |
-| ANS-ANYCAST-2 | 210.19.6.86 | anycast VIP |
-| GLEN-C1/C2/C3 | 210.19.6.103/106/109 | cache |
-| UPM-C1/C2/C3 | 210.19.6.135/138/141 | cache |
-| CACHE-ANYCAST-1/2 | 210.19.6.81/82 | anycast VIP |
+| Role | Count |
+|---|---|
+| recursive (GLEN + UPM) | 2 |
+| authoritative (GLEN + UPM) | 2 |
+| ANS anycast VIP | 2 |
+| cache (GLEN ×3 + UPM ×3) | 6 |
+| CACHE anycast VIP | 2 |
 
 The user's original grouping (ANS vs CACHE-TIME) lives entirely in the
 resolver names — the profile itself is a single flat list, per "add
@@ -55,10 +60,12 @@ TOML-parsing unit tests stay deterministic and don't touch disk.
 
 ## Verification
 
-`cargo test`: 107 passed (incl. new `time_profile_has_expected_resolvers`,
+`cargo test`: 107 passed at the time of the original ship (incl.
 `custom_resolvers_roundtrip_disk`, `load_custom_resolvers_missing_file_is_empty`,
-and two `add_open` popup key-handling tests). `cargo build --release` clean.
-Deployed by rebuilding the `dnsdoc-demo` Docker image on clab-mini and
-swapping the running container (same `-p 10443:7681`, same
-`unless-stopped` restart policy) — confirmed via fresh image hash/binary
-mtime and `curl` 200 on `http://100.64.0.3:10443/`.
+and two `add_open` popup key-handling tests; the time-profile-specific test
+was removed along with the builtin in the 2026-08-12 privacy fix, back down
+to 106). `cargo build --release` clean. Deployed by rebuilding the
+`dnsdoc-demo` Docker image on clab-mini and swapping the running container
+(same `-p 10443:7681`, same `unless-stopped` restart policy) — confirmed
+via fresh image hash/binary mtime and `curl` 200 on
+`http://100.64.0.3:10443/`.
