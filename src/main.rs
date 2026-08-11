@@ -133,6 +133,32 @@ async fn run(
                             Err(_) => app.status = "invalid IP".into(),
                         }
                     }
+                    Action::AddResolver(raw) => {
+                        let tokens: Vec<&str> = raw.trim().split_whitespace().collect();
+                        if tokens.len() != 2 {
+                            app.status = "usage: name ip".into();
+                        } else if let Ok(ip) = tokens[1].parse::<std::net::IpAddr>() {
+                            let name = tokens[0].to_string();
+                            match app.profiles.iter_mut().find(|p| p.name.eq_ignore_ascii_case("custom")) {
+                                Some(profile) => {
+                                    profile.resolvers.push(dnsdoc::config::Resolver { name, ip });
+                                    match dnsdoc::config::save_custom_resolvers(
+                                        &cfg.custom_resolvers_path,
+                                        &profile.resolvers,
+                                    ) {
+                                        Ok(()) => app.status = format!(
+                                            "saved resolver {} ({ip}) — 'p' to select profile custom",
+                                            profile.resolvers.last().unwrap().name
+                                        ),
+                                        Err(e) => app.status = format!("save failed: {e}"),
+                                    }
+                                }
+                                None => app.status = "error: no custom profile".into(),
+                            }
+                        } else {
+                            app.status = format!("invalid IP: {}", tokens[1]);
+                        }
+                    }
                     Action::DomainChanged => {
                         match validate_domain(&app.domain) {
                             Ok(d) => {

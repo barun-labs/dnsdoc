@@ -91,9 +91,54 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.help_open {
         draw_help(f);
     }
+    if app.add_open {
+        draw_add_resolver(f, app);
+    }
     if app.reverse_open || !app.reverse_result.is_empty() {
         draw_reverse(f, app);
     }
+}
+
+/// Add-resolver popup: one-line "name ip" input while open.
+fn draw_add_resolver(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let w = 60.min(area.width);
+    let rect = Rect {
+        x: area.width.saturating_sub(w) / 2,
+        y: area.height.saturating_sub(3) / 2,
+        width: w,
+        height: 3,
+    };
+    f.render_widget(Clear, rect);
+    let cursor = app.add_cursor.min(app.add_buf.len());
+    let before = &app.add_buf[..cursor];
+    let rest = &app.add_buf[cursor..];
+    let mut spans = vec![Span::styled(before.to_string(), Style::default().add_modifier(Modifier::BOLD))];
+    if rest.is_empty() {
+        spans.push(Span::styled("█", Style::default().fg(Color::Cyan)));
+    } else {
+        spans.push(Span::styled(
+            rest[..rest.chars().next().unwrap().len_utf8()].to_string(),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            rest[rest.chars().next().unwrap().len_utf8()..].to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(spans))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" Add resolver — name ip · Enter save · Esc cancel "),
+        ),
+        rect,
+    );
 }
 
 /// Reverse-lookup popup: input box while open, result list once populated.
@@ -165,6 +210,7 @@ fn draw_help(f: &mut Frame) {
         ("p/P", "profile"),
         ("e", "export report"),
         ("v", "reverse lookup"),
+        ("a", "add resolver"),
         ("?", "help"),
     ]
     .iter()
@@ -838,7 +884,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else if !app.status.is_empty() {
         app.status.clone()
     } else {
-        "q quit · Tab/1-8 switch · r rerun · t record-type · d domain · p/P profile · e export · v reverse · ? help".to_string()
+        "q quit · Tab/1-8 switch · r rerun · t record-type · d domain · p/P profile · e export · v reverse · a add resolver · ? help".to_string()
     };
     f.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::Gray)),

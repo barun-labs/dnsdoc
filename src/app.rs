@@ -62,6 +62,8 @@ pub enum Action {
     Export,
     /// Reverse-lookup the typed IP (PTR + forward confirm).
     ReverseLookup(String),
+    /// Add a custom resolver from the typed "name ip" text.
+    AddResolver(String),
 }
 
 pub const RTYPES: [RecordType; 6] = [
@@ -99,6 +101,10 @@ pub struct App {
     pub reverse_open: bool,
     pub reverse_buf: String,
     pub reverse_result: Vec<String>,
+    pub add_open: bool,
+    pub add_buf: String,
+    /// Byte index into `add_buf` for the add-resolver cursor.
+    pub add_cursor: usize,
     pub status: String,
     pub loading: bool,
     /// Resolver count of the in-flight propagation run (for the counter).
@@ -139,6 +145,9 @@ impl App {
             reverse_open: false,
             reverse_buf: String::new(),
             reverse_result: vec![],
+            add_open: false,
+            add_buf: String::new(),
+            add_cursor: 0,
             status: String::new(),
             loading: false,
             prop_expected: 0,
@@ -174,7 +183,60 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
-        // First priority: the reverse-lookup popup swallows everything, so
+        // First priority: the add-resolver popup swallows everything, so
+        // typing a name never trips a global keybind.
+        if self.add_open {
+            match key.code {
+                KeyCode::Esc => {
+                    self.add_open = false;
+                    self.add_buf.clear();
+                    self.add_cursor = 0;
+                }
+                KeyCode::Enter => {
+                    let buf = self.add_buf.trim().to_string();
+                    self.add_open = false;
+                    self.add_buf.clear();
+                    self.add_cursor = 0;
+                    if !buf.is_empty() {
+                        return Action::AddResolver(buf);
+                    }
+                }
+                KeyCode::Backspace => {
+                    if self.add_cursor > 0 && self.add_cursor <= self.add_buf.len() {
+                        self.add_cursor -= 1;
+                        self.add_buf.remove(self.add_cursor);
+                    }
+                }
+                KeyCode::Delete => {
+                    if self.add_cursor < self.add_buf.len() {
+                        self.add_buf.remove(self.add_cursor);
+                    }
+                }
+                KeyCode::Left => {
+                    self.add_cursor = self.add_cursor.saturating_sub(1);
+                }
+                KeyCode::Right => {
+                    if self.add_cursor < self.add_buf.len() {
+                        self.add_cursor += 1;
+                    }
+                }
+                KeyCode::Home => {
+                    self.add_cursor = 0;
+                }
+                KeyCode::End => {
+                    self.add_cursor = self.add_buf.len();
+                }
+                KeyCode::Char(c) => {
+                    let idx = self.add_cursor.min(self.add_buf.len());
+                    self.add_buf.insert(idx, c);
+                    self.add_cursor = idx + 1;
+                }
+                _ => {}
+            }
+            return Action::None;
+        }
+
+        // Second priority: the reverse-lookup popup swallows everything, so
         // typing an IP never trips a global keybind.
         if self.reverse_open {
             match key.code {
@@ -346,6 +408,12 @@ impl App {
             KeyCode::Char('v') => {
                 self.reverse_open = true;
                 self.reverse_buf.clear();
+                Action::None
+            }
+            KeyCode::Char('a') => {
+                self.add_open = true;
+                self.add_buf.clear();
+                self.add_cursor = 0;
                 Action::None
             }
             _ => Action::None,
@@ -619,6 +687,33 @@ mod tests {
         assert_eq!(act, Action::ReverseLookup("1.1.1.1".into()));
         assert!(!a.reverse_open);
         assert!(a.reverse_buf.is_empty());
+    }
+
+    #[test]
+    fn a_opens_add_popup_and_enter_submits() {
+        let mut a = app();
+        assert_eq!(a.handle_key(key(KeyCode::Char('a'))), Action::None);
+        assert!(a.add_open);
+        for c in "lab 10.1.2.3".chars() {
+            a.handle_key(key(KeyCode::Char(c)));
+        }
+        let act = a.handle_key(key(KeyCode::Enter));
+        assert_eq!(act, Action::AddResolver("lab 10.1.2.3".into()));
+        assert!(!a.add_open);
+        assert!(a.add_buf.is_empty());
+    }
+
+    #[test]
+    fn add_popup_swallows_global_keys_and_esc_cancels() {
+        let mut a = app();
+        a.handle_key(key(KeyCode::Char('a')));
+        // q must not quit while typing
+        assert_eq!(a.handle_key(key(KeyCode::Char('q'))), Action::None);
+        assert!(a.add_open);
+        a.handle_key(key(KeyCode::Esc));
+        assert!(!a.add_open);
+        assert!(a.add_buf.is_empty());
+        assert_eq!(a.handle_key(key(KeyCode::Char('q'))), Action::Quit);
     }
 
     #[test]

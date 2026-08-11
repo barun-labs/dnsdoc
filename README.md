@@ -36,6 +36,7 @@ dnsdoc example.com --profile privacy   # start on a resolver profile
 | `P`        | profile picker (↑/↓, Enter, Esc)        |
 | `e`        | export full report to `dnsdoc-<domain>-<time>.md` + `.json` |
 | `v`        | reverse lookup (type an IP, Enter)      |
+| `a`        | add a custom resolver (type `name ip`, Enter saves) |
 | `?`        | help overlay                            |
 
 ## Tabs
@@ -109,21 +110,15 @@ Custom resolvers are added on top of the built-in public list.
 
 ### Resolver profiles
 
-Three presets ship built in: **all** (9 reliable public resolvers + your
+Five presets ship built in: **all** (9 reliable public resolvers + your
 custom ones), **global** (Google/Cloudflare/Quad9/OpenDNS), **privacy**
-(Quad9/AdGuard). Define your own — e.g. ISP resolver sets —
-and switch with `p`/`P` in the TUI or `--profile NAME` on the CLI:
+(Quad9/AdGuard), **time** (the 14-resolver TIME DNS lab — GLEN/UPM
+recursive and anycast pairs, plus the CACHE anycast pair), and **custom**
+(empty until you add to it, see below). Define your own on top — e.g. ISP
+resolver sets — and switch with `p`/`P` in the TUI or `--profile NAME` on
+the CLI:
 
 ```toml
-[[profile]]
-name = "time-my"
-resolvers = [
-  { name = "TIME-1", ip = "210.19.6.81" },
-  { name = "TIME-2", ip = "210.19.6.82" },
-  { name = "TIME-ANS-1", ip = "210.19.6.85" },
-  { name = "TIME-ANS-2", ip = "210.19.6.86" },
-]
-
 [[profile]]
 name = "unifi-my"
 resolvers = [
@@ -131,6 +126,14 @@ resolvers = [
   { name = "Unifi-2", ip = "202.188.18.188" },
 ]
 ```
+
+### Custom resolvers (added from the TUI)
+
+Press `a`, type `name ip` (e.g. `lab-dns 10.0.0.53`), Enter. It's appended
+to the **custom** profile immediately — no restart needed — and persisted to
+`~/.local/share/dnsdoc/custom_resolvers.json` so it's there next time you
+open dnsdoc. Switch to it with `p`/`P` like any other profile to run
+propagation/DNSSEC checks against just your saved test servers.
 
 Monitor history is stored at `~/.local/share/dnsdoc/history.jsonl`
 (one JSON change event per line).
