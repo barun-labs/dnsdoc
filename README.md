@@ -46,7 +46,13 @@ dnsdoc example.com --profile privacy   # start on a resolver profile
   authoritative answer, and shows a consensus verdict. Rows stream in live
   with a progress counter; a gauge shows the agree ratio and latencies are
   color-banded. Dead resolvers show their error inline and never block the
-  rest. Stale answers get a wall-clock ETA for when caches clear.
+  rest. Stale answers get a wall-clock ETA for when caches clear. When a
+  profile has few resolvers or the terminal is tall, the space below the
+  table isn't left blank — it fills with a latency-tier breakdown and a
+  min/median/max/error summary, computed from the same rows already in the
+  table. Every list-based tab (Audit, DNSSEC, Mail, Sweep, Trace, Monitor,
+  Analysis) gets a lighter version: a dim "end of results" marker instead of
+  dead space.
 - **Audit** — external health checks with OK / WARN / ERR severity: NS
   delegation consistency, NS redundancy (count + /24 spread), glue
   consistency (parent referral vs child zone), SOA serial agreement, SOA

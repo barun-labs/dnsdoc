@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -11,7 +11,7 @@ use crate::app::{App, Tab};
 use crate::checks::analysis::{analyze_propagation, synthesize};
 use crate::checks::monitor::sparkline;
 use crate::checks::propagation::consensus;
-use crate::types::{CheckResult, Diagnosis, Severity};
+use crate::types::{CheckResult, Diagnosis, PropagationRow, Severity};
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -43,7 +43,7 @@ pub fn relative_age(ts: &str, now: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// Skip `scroll` items and attach a scrollbar when content overflows.
-fn scrolled_list(f: &mut Frame, area: Rect, items: Vec<ListItem<'static>>, block: Block<'static>, scroll: u16) {
+fn scrolled_list(f: &mut Frame, area: Rect, items: Vec<ListItem<'static>>, block: Block<'static>, scroll: u16, noun: &str) {
     let total = items.len();
     let visible = area.height.saturating_sub(2) as usize; // borders
     let max_off = total.saturating_sub(visible);
@@ -57,7 +57,29 @@ fn scrolled_list(f: &mut Frame, area: Rect, items: Vec<ListItem<'static>>, block
             area,
             &mut state,
         );
+    } else {
+        render_list_fill(f, area, total, total.min(visible) as u16, noun);
     }
+}
+
+/// Fill dead space below a short list with a centered end-of-results marker.
+fn render_list_fill(f: &mut Frame, area: Rect, total: usize, shown: u16, noun: &str) {
+    let used = 2 + shown; // borders only, no header row
+    let gap = area.height.saturating_sub(used);
+    if gap < 4 {
+        return;
+    }
+    let line = Line::from(Span::styled(
+        format!("── {shown}/{total} {noun} · end of results ──"),
+        Style::default().fg(Color::DarkGray),
+    ));
+    let rect = Rect {
+        x: area.x,
+        y: area.y + used + gap.saturating_sub(1) / 2,
+        width: area.width,
+        height: 1,
+    };
+    f.render_widget(Paragraph::new(line).alignment(Alignment::Center), rect);
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -546,7 +568,101 @@ fn draw_propagation(f: &mut Frame, app: &App, area: Rect) {
             split[2],
             &mut state,
         );
+    } else {
+        // dead space below a short table: latency tiers + summary
+        render_propagation_fill(f, split[2], &app.prop_rows, total as u16);
     }
+}
+
+/// Fill dead space below a short resolver table with latency-tier bars and a
+/// summary; a one-line footer when space is tight, full block when tall.
+fn render_propagation_fill(f: &mut Frame, area: Rect, rows: &[PropagationRow], rows_shown: u16) {
+    let used = 2 + 1 + rows_shown; // borders + header row
+    let gap = area.height.saturating_sub(used);
+    if gap < 4 {
+        return;
+    }
+    let (agree, answered) = consensus(rows);
+    let footer = format!("── {agree}/{answered} resolvers · end of results ──");
+    let lines: Vec<Line> = if gap < 11 {
+        vec![Line::from(Span::styled(footer, Style::default().fg(Color::DarkGray)))]
+    } else {
+        // One pass: bucket latencies, count timeouts, collect timed values.
+        let mut buckets = [0usize; 6]; // <20, 20-49, 50-99, 100-199, 200-499, 500+
+        let mut timeouts = 0;
+        let mut lats = Vec::new();
+        for r in rows {
+            if r.error.is_some() {
+                timeouts += 1;
+                continue;
+            }
+            let Some(ms) = r.latency_ms else { continue }; // no latency data: skip
+            lats.push(ms);
+            let idx = if ms < 20 {
+                0
+            } else if ms < 50 {
+                1
+            } else if ms < 100 {
+                2
+            } else if ms < 200 {
+                3
+            } else if ms < 500 {
+                4
+            } else {
+                5
+            };
+            buckets[idx] += 1;
+        }
+        let bar_cap = area.width.saturating_sub(24) as usize;
+        let labels = ["<20ms", "20-49", "50-99", "100-199", "200-499", "500+"];
+        let lows = [0u128, 20, 50, 100, 200, 500];
+        let mut lines = Vec::new();
+        for (i, label) in labels.iter().enumerate() {
+            let bar = "█".repeat(buckets[i].min(bar_cap));
+            lines.push(Line::from(vec![
+                Span::styled(format!("{label:<9}"), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{bar} {}", buckets[i]), Style::default().fg(latency_color(lows[i]))),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            // Covers timeouts AND real-but-negative answers (REFUSED, SERVFAIL,
+            // ...) — anything that stopped the row from having a latency at
+            // all. Labeled "error", not "timeout": a REFUSED is a real
+            // response, not a stall, and this app's own screenshots show
+            // resolvers that REFUSE far more often than they time out.
+            Span::styled("error    ".to_string(), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{} {}", "█".repeat(timeouts.min(bar_cap)), timeouts),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        lines.push(Line::default());
+        lats.sort_unstable();
+        let stats = if lats.is_empty() {
+            "no latency data".to_string()
+        } else {
+            let median = if lats.len() % 2 == 0 {
+                lats[lats.len() / 2 - 1] // lower-middle, no averaging
+            } else {
+                lats[lats.len() / 2]
+            };
+            format!("min {}ms · median {}ms · max {}ms", lats[0], median, lats[lats.len() - 1])
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{stats} · {timeouts} errors · {agree}/{answered} match auth"),
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(footer, Style::default().fg(Color::DarkGray))));
+        lines
+    };
+    let n = lines.len() as u16;
+    let rect = Rect {
+        x: area.x,
+        y: area.y + used + gap.saturating_sub(n) / 2,
+        width: area.width,
+        height: n,
+    };
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rect);
 }
 
 fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
@@ -575,6 +691,7 @@ fn draw_audit(f: &mut Frame, app: &App, area: Rect) {
         items,
         Block::default().borders(Borders::ALL).title(" Audit "),
         app.scroll,
+        "checks",
     );
 }
 
@@ -623,6 +740,7 @@ fn draw_dnssec(f: &mut Frame, app: &App, area: Rect) {
         items,
         Block::default().borders(Borders::ALL).title(" DNSSEC "),
         app.scroll,
+        "records",
     );
 }
 
@@ -652,6 +770,7 @@ fn draw_mail(f: &mut Frame, app: &App, area: Rect) {
         items,
         Block::default().borders(Borders::ALL).title(" Mail "),
         app.scroll,
+        "checks",
     );
 }
 
@@ -687,6 +806,7 @@ fn draw_sweep(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .title(format!(" Sweep — {} hits ", app.sweep_rows.len())),
         app.scroll,
+        "hits",
     );
 }
 
@@ -750,6 +870,7 @@ fn draw_trace(f: &mut Frame, app: &App, area: Rect) {
         items,
         Block::default().borders(Borders::ALL).title(" Delegation trace "),
         app.scroll,
+        "hops",
     );
 }
 
@@ -831,6 +952,7 @@ fn draw_monitor(f: &mut Frame, app: &App, area: Rect) {
         log,
         Block::default().borders(Borders::ALL).title(" Change log "),
         app.scroll,
+        "events",
     );
 }
 
@@ -875,6 +997,7 @@ fn draw_analysis(f: &mut Frame, app: &App, area: Rect) {
         items,
         Block::default().borders(Borders::ALL).title(title),
         app.scroll,
+        "findings",
     );
 }
 
@@ -909,6 +1032,58 @@ mod tests {
         assert_eq!(latency_color(10), Color::Green);
         assert_eq!(latency_color(120), Color::Yellow);
         assert_eq!(latency_color(700), Color::Red);
+    }
+
+    /// Row-by-row rendering of a frame buffer, for eyeballing layouts in test output.
+    fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn propagation_fill_renders_latency_tiers() {
+        let mut app = App::new(
+            "example.com".into(),
+            vec![],
+            vec![crate::config::Profile { name: "default".into(), resolvers: vec![] }],
+        );
+        app.tab = Tab::Propagation;
+        app.prop_rows = vec![
+            PropagationRow {
+                resolver: "r1".into(), ip: "1.1.1.1".parse().unwrap(),
+                answers: vec!["1.2.3.4".into()], ttl: Some(60), latency_ms: Some(5),
+                error: None, matches_auth: Some(true),
+            },
+            PropagationRow {
+                resolver: "r2".into(), ip: "1.1.1.2".parse().unwrap(),
+                answers: vec!["1.2.3.4".into()], ttl: Some(60), latency_ms: Some(30),
+                error: None, matches_auth: Some(true),
+            },
+            PropagationRow {
+                resolver: "r3".into(), ip: "1.1.1.3".parse().unwrap(),
+                answers: vec!["1.2.3.4".into()], ttl: Some(60), latency_ms: Some(120),
+                error: None, matches_auth: Some(true),
+            },
+            PropagationRow {
+                resolver: "r4".into(), ip: "1.1.1.4".parse().unwrap(),
+                answers: vec![], ttl: None, latency_ms: None,
+                error: Some("timeout".into()), matches_auth: None,
+            },
+        ];
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let rendered = buffer_to_string(terminal.backend().buffer());
+        println!("{rendered}");
+        assert!(rendered.contains("end of results"));
+        assert!(rendered.contains("min 5ms"));
+        assert!(rendered.contains("1 errors"));
     }
 
     #[test]
